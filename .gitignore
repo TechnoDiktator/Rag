@@ -1,0 +1,17 @@
+# Python environments
+**/multi_modal_rag_env/
+**/venv/
+**/.venv/
+**/env/
+**/rag/
+
+# Environment variables
+**/.env
+
+# Python cache
+**/__pycache__/
+*.pyc
+
+# Chroma databases
+**/db/
+**/chroma_db/
