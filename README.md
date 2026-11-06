@@ -1,4 +1,4 @@
-# Retrieval-Augmented Generation (RAG) Demo
+# Retrieval-Augmented Generation (RAG) (Multimodal)
 
 A small RAG project that indexes company reference documents, retrieves the
 most relevant text for a natural-language question, and uses an OpenAI chat
