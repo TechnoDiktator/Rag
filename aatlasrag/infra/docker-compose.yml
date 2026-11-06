@@ -1,0 +1,74 @@
+# Local development dependencies only. Do not expose these services to the internet
+# or reuse these local credentials in a deployed environment.
+services:
+  postgres:
+    image: postgres:17
+    container_name: atlasrag-postgres
+    environment:
+      # These values come from infra/.env, with local-only defaults as a fallback.
+      POSTGRES_DB: ${POSTGRES_DB:-atlasrag}
+      POSTGRES_USER: ${POSTGRES_USER:-atlasrag}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-postgres-password}
+    ports:
+      # Bind to loopback so the database is reachable only from this computer.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # Keep database files when the container is recreated.
+      - postgres_data:/var/lib/postgresql/data
+      # Mount only the forward migration: mounting the whole migrations folder
+      # would also run its destructive .down.sql file during database init.
+      # This script runs once when postgres_data is first created.
+      - ../migrations/000001_create_document_lifecycle.up.sql:/docker-entrypoint-initdb.d/001_create_document_lifecycle.sql:ro
+    healthcheck:
+      # Other services can wait for PostgreSQL to accept connections.
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: atlasrag-minio
+    command: server /data --console-address ":9001"
+    environment:
+      # MinIO implements the S3 API locally; no AWS account is needed.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-atlasrag-local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-dev-minio-password}
+    ports:
+      # Port 9000 is the S3 API used by the Go backend.
+      - "127.0.0.1:9000:9000"
+      # Port 9001 is the MinIO web console for inspecting/creating buckets.
+      - "127.0.0.1:9001:9001"
+    volumes:
+      # Keep uploaded PDFs when the container is recreated.
+      - minio_data:/data
+    restart: unless-stopped
+
+  create-minio-bucket:
+    # The MinIO client is a short-lived setup container, not another server.
+    image: minio/mc:latest
+    container_name: atlasrag-create-minio-bucket
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-atlasrag-local}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-dev-minio-password}
+      S3_BUCKET: ${S3_BUCKET:-atlasrag-documents}
+    entrypoint: ["/bin/sh", "-c"]
+    # Wait until MinIO accepts connections, then create the bucket if it is absent.
+    # --ignore-existing makes this safe to run again after a restart.
+    command:
+      - >-
+        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
+          echo "MinIO is not ready yet; retrying";
+          sleep 2;
+        done;
+        mc mb --ignore-existing "local/$$S3_BUCKET"
+    restart: "no"
+
+volumes:
+  # Named volumes are managed by Docker and survive `docker compose down`.
+  postgres_data:
+  minio_data:

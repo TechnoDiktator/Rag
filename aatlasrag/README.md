@@ -14,10 +14,16 @@ client-facing requests; Python workers process documents asynchronously.
 
 ## Build order
 
-1. Define document lifecycle tables and event contracts.
-2. Add upload and object storage support to the Go API.
-3. Process uploaded PDFs in a Python worker.
+1. **Foundation in place:** document lifecycle migration and the
+   `document.uploaded` v1 Kafka contract.
+2. **Upload API in place:** accept PDFs, store them in S3-compatible object
+   storage, and transactionally create the document, version, parse job, and
+   outbox event. See `apps/api-go/README.md` for configuration.
+3. Add an outbox publisher and process uploaded PDFs in a Python worker.
 4. Add chunking, embeddings, and vector search.
+
+The initial PostgreSQL migration is in `migrations/`. The upload event schema
+and example are in `contracts/events/`.
 
 Start with one working path from PDF upload through processing before adding
 more services or infrastructure.

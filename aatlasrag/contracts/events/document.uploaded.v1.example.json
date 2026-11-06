@@ -1,0 +1,16 @@
+{
+  "event_id": "ec45a0cf-799a-4847-b424-17b7001bb5a0",
+  "event_type": "document.uploaded",
+  "event_version": 1,
+  "occurred_at": "2026-11-06T18:20:00Z",
+  "correlation_id": "f83d73c0-421c-4c4a-9df5-b69c7d687feb",
+  "document_id": "99591d99-c13e-42d4-8e38-a44ba7a13cc7",
+  "document_version": 1,
+  "payload": {
+    "filename": "annual-report.pdf",
+    "object_key": "documents/99591d99-c13e-42d4-8e38-a44ba7a13cc7/v1/annual-report.pdf",
+    "content_hash": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "mime_type": "application/pdf",
+    "file_size_bytes": 204800
+  }
+}
