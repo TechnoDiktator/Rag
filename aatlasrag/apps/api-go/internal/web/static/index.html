@@ -20,6 +20,8 @@
         <a class="nav-link active" href="#workspace"><span aria-hidden="true">▦</span> Overview <span class="nav-arrow">↗</span></a>
         <a class="nav-link" href="#upload"><span aria-hidden="true">⇧</span> Upload document</a>
         <a class="nav-link" href="#status"><span aria-hidden="true">◷</span> Track status</a>
+        <a class="nav-link" href="#chunks"><span aria-hidden="true">▤</span> View chunks</a>
+        <a class="nav-link" href="#search"><span aria-hidden="true">⌕</span> Search chunks</a>
       </nav>
       <div class="side-bottom">
         <div class="sidebar-note">
@@ -101,6 +103,51 @@
           </section>
         </div>
 
+        <section class="panel chunk-panel" id="chunks" aria-labelledby="chunks-title">
+          <div class="panel-top"><div><span class="panel-kicker">03 / EXPLORE CONTENT</span><h3 id="chunks-title">Document chunks</h3></div><span class="panel-icon" aria-hidden="true">▤</span></div>
+          <p class="panel-description">Track a completed document above to explore its chunks and source pages. Page references do not highlight the exact text.</p>
+          <div id="chunk-message" class="message" role="status" aria-live="polite">No document selected.</div>
+          <div id="chunk-viewer" hidden>
+            <div class="chunk-layout">
+              <div>
+                <div class="chunk-pagination" aria-label="Chunk list pagination"><span id="chunks-range" aria-live="polite"></span><div><button id="chunks-previous" class="text-button" type="button">← Previous</button><button id="chunks-next" class="text-button" type="button">Next →</button></div></div>
+                <div class="chunk-table-scroll" tabindex="0" role="region" aria-label="Document chunks table">
+                  <table class="chunk-table">
+                    <thead><tr><th scope="col">Chunk</th><th scope="col">Content</th><th scope="col">PDF pages</th></tr></thead>
+                    <tbody id="chunk-list"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="pdf-preview">
+                <div class="pdf-preview-head"><strong id="pdf-heading">Source PDF</strong><a id="pdf-open" target="_blank" rel="noopener noreferrer">Open PDF ↗</a></div>
+                <p id="pdf-hint">Choose a page reference. If your browser does not jump to it, scroll the PDF or use its page controls.</p>
+                <iframe id="pdf-frame" title="Original PDF source page"></iframe>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel search-panel" id="search" aria-labelledby="search-title">
+          <div class="panel-top"><div><span class="panel-kicker">04 / FIND EVIDENCE</span><h3 id="search-title">Search your documents</h3></div><span class="panel-icon" aria-hidden="true">⌕</span></div>
+          <p class="panel-description">Search indexed chunks or generate a grounded answer. Both send your query to OpenAI; answering also sends retrieved chunk text and descriptions to GPT-4o. Calls can incur charges.</p>
+          <form id="search-form" class="search-form">
+            <label for="search-query">SEARCH QUERY</label>
+            <textarea id="search-query" maxlength="2000" rows="2" placeholder="Ask a question or enter keywords" required></textarea>
+            <div class="search-options">
+              <div><label for="search-document">DOCUMENT ID <span>(optional)</span></label><input id="search-document" type="text" placeholder="Search all documents" autocomplete="off"></div>
+              <div><label for="search-limit">RESULTS</label><input id="search-limit" type="number" min="1" max="20" value="3" required></div>
+              <div class="search-actions"><button id="search-button" class="button lookup-button" type="submit" value="search">Search chunks <span aria-hidden="true">↗</span></button><button id="answer-button" class="button lookup-button" type="submit" value="answer">Generate answer <span aria-hidden="true">↗</span></button></div>
+            </div>
+          </form>
+          <div id="search-message" class="message" role="status" aria-live="polite"></div>
+          <div id="answer-result" class="answer-result" hidden>
+            <strong>Answer</strong><span id="answer-insufficient" class="answer-warning" hidden>Insufficient evidence</span>
+            <p id="answer-text"></p>
+            <small>AI-generated; check the cited sources. Excerpts may be truncated.</small>
+          </div>
+          <div id="search-results" class="search-results"></div>
+        </section>
+
         <section class="pipeline" aria-labelledby="pipeline-title">
           <div><span class="panel-kicker">BEHIND THE SCENES</span><h3 id="pipeline-title">A little structure goes a long way.</h3><p>Your document moves through an asynchronous pipeline. Processing may take some time.</p></div>
           <div class="pipeline-steps">
@@ -110,7 +157,7 @@
             <div><span>04</span><strong>Index</strong><small>When configured</small></div>
           </div>
         </section>
-        <footer class="footer"><span>ATLASRAG <span class="footer-separator">/</span> DOCUMENT INTELLIGENCE</span><span>Search and answers are coming later.</span></footer>
+        <footer class="footer"><span>ATLASRAG <span class="footer-separator">/</span> DOCUMENT INTELLIGENCE</span><span>Answers are generated from retrieved evidence.</span></footer>
       </div>
     </main>
   </div>

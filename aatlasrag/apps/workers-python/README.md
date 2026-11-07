@@ -65,8 +65,8 @@ cannot send to that provider.
 The worker describes image/table chunks with `gpt-4o`, embeds the text plus
 description with `text-embedding-3-small` (1536 dimensions), and stores
 vectors in `document_chunk_embeddings`. It stores references to original
-assets separately; it does not embed image bytes. Retrieval and question
-answering are not implemented. Existing documents are not automatically
+assets separately; it does not embed image bytes. The Go API can search indexed
+chunks; question answering is not implemented. Existing documents are not automatically
 reprocessed.
 
 API, validation or database failures prevent completion and are logged; the

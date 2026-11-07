@@ -11,11 +11,10 @@ multimodal notebook. They are prototypes, not the deployed AtlasRAG backend.
 
 > **Current scope:** PDF upload, asynchronous processing, chunk storage and
 > optional vector creation are implemented. A lightweight frontend supports
-> uploads and status tracking. Search, answer generation and production
-> deployment are not yet implemented in AtlasRAG.
-> The optional indexing path has been tested with mocked OpenAI calls and an
-> isolated pgvector database; a live OpenAI/worker-container run remains
-> unverified.
+> uploads, status tracking, chunk inspection, hybrid search and prototype
+> grounded answer generation. Live indexing and retrieval have been exercised;
+> answer generation and overall quality still need live evaluation. Production
+> deployment is not yet implemented.
 
 ## Architecture
 
@@ -60,7 +59,7 @@ and is intended for development, not as a hardened production image.
 
 | Component | Responsibility |
 | --- | --- |
-| Go API | Validates and stores uploads, registers documents, publishes outbox events and serves status requests. |
+| Go API | Validates uploads, publishes outbox events, serves status and performs prototype hybrid chunk search. |
 | PostgreSQL | Stores document versions, parse jobs, events, pages, elements, chunks and source references. |
 | pgvector | Stores optional 1,536-dimensional chunk embeddings in PostgreSQL. |
 | MinIO | Stores original PDFs and extracted image assets behind an S3-compatible API. |
@@ -115,7 +114,22 @@ Client           Go API             PostgreSQL       Kafka       Python worker
 
 The current `COMPLETED` status means the configured processing path completed.
 It does **not** by itself guarantee embeddings exist or that the document is
-searchable. With indexing disabled, no OpenAI calls or embeddings are made.
+searchable. With indexing disabled, ingestion makes no OpenAI calls or
+embeddings. Search makes its own query-embedding call when configured.
+
+## Hybrid retrieval
+
+The Go API's `POST /api/v1/search` embeds a query with
+`text-embedding-3-small`, then combines exact pgvector cosine ranks with BM25
+keyword ranks using weighted reciprocal rank fusion (0.7 vector / 0.3 keyword).
+The UI shows ranked chunks, descriptions and page references. Its separate
+answer action uses GPT-4o to answer from retrieved excerpts and cite source
+IDs. Search and answer generation require `OPENAI_API_KEY` in the Go API
+process environment. Search sends the query to OpenAI; answering also sends
+retrieved text and descriptions, and both can incur charges. Citations are
+checked for valid IDs, not factual support. See the
+[Go API README](aatlasrag/apps/api-go/README.md) for request format,
+limitations and configuration.
 
 ## Data and reliability
 
@@ -240,14 +254,14 @@ outputs are examples, not proof that all PDF types work.
 
 ## Limitations and next steps
 
-- Build a retrieval endpoint that embeds queries with the **same model** as
-  stored vectors, retrieves relevant chunks and returns page/asset citations.
-- Add grounded answer generation and evaluate retrieval quality with real
-  questions and varied PDFs, including scanned documents.
+- Evaluate retrieval relevance on representative queries and PDFs, and
+  benchmark the exact cosine/BM25 baseline before adding indexes.
+- Evaluate generated answers and retrieval quality with real questions and
+  varied PDFs, including scanned documents.
 - Add a reprocessing workflow, authentication, observability, bounded retries,
   a dead-letter queue, and safe cleanup for orphaned objects.
-- Test the worker container and live OpenAI integration end to end. Status and
-  retry handling currently reflect a local-development ingestion pipeline.
+- Test live answer generation end to end. Status and retry handling currently
+  reflect a local-development ingestion pipeline.
 - Design deployment separately. A future Render deployment could self-host
   MinIO with persistent storage, but must address backups, security, broker
   hosting, service credentials and operating costs. No Render deployment

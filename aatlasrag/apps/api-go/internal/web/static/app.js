@@ -14,11 +14,28 @@ const statusEmpty = document.querySelector("#status-empty");
 const statusResult = document.querySelector("#status-result");
 const refreshButton = document.querySelector("#refresh-button");
 const pollIndicator = document.querySelector("#poll-indicator");
+const chunkMessage = document.querySelector("#chunk-message");
+const chunkViewer = document.querySelector("#chunk-viewer");
+const chunkList = document.querySelector("#chunk-list");
+const chunkPrevious = document.querySelector("#chunks-previous");
+const chunkNext = document.querySelector("#chunks-next");
+const pdfFrame = document.querySelector("#pdf-frame");
+const pdfOpen = document.querySelector("#pdf-open");
+const searchForm = document.querySelector("#search-form");
+const searchButton = document.querySelector("#search-button");
+const answerButton = document.querySelector("#answer-button");
+const searchMessage = document.querySelector("#search-message");
+const searchResults = document.querySelector("#search-results");
+const answerResult = document.querySelector("#answer-result");
+const answerText = document.querySelector("#answer-text");
+const chunkPageSize = 20;
 const terminalStatuses = new Set(["COMPLETED", "FAILED"]);
 let selectedFile = null;
 let timer = null;
 let requestVersion = 0;
 let trackedId = "";
+let chunkOffset = 0;
+let chunkRequest = 0;
 
 function message(element, text, kind = "") {
   element.textContent = text;
@@ -116,8 +133,198 @@ function renderStatus(data) {
   error.textContent = data.error || "";
   error.hidden = !data.error;
   pollIndicator.textContent = terminalStatuses.has(status) ? "Auto-refresh stopped" : "Auto-refreshing every 5 seconds";
+  if (status === "COMPLETED") loadChunks(trackedId, 0);
   return status;
 }
+
+function showPDF(id, version, page) {
+  const url = `/api/v1/documents/${encodeURIComponent(id)}/pdf?version=${encodeURIComponent(version)}&page=${page}#page=${page}`;
+  pdfFrame.src = url;
+  pdfOpen.href = url;
+  setText("#pdf-heading", `Source PDF · requested page ${page}`);
+}
+
+function renderChunks(data, id, offset) {
+  chunkList.replaceChildren();
+  for (const chunk of data.chunks) {
+    const row = document.createElement("tr");
+    const number = document.createElement("td");
+    number.className = "chunk-number";
+    number.textContent = String(chunk.index + 1);
+    const content = document.createElement("td");
+    const preview = document.createElement("div");
+    preview.className = "chunk-preview";
+    preview.textContent = chunk.text || "No text; this chunk may contain an image.";
+    const details = document.createElement("details");
+    details.className = "chunk-details";
+    details.addEventListener("toggle", () => { preview.hidden = details.open; });
+    const summary = document.createElement("summary");
+    summary.textContent = chunk.description ? "Full text and description" : "Full text";
+    const text = document.createElement("div");
+    text.className = "chunk-text";
+    text.textContent = chunk.text || "No text; this chunk may contain an image.";
+    details.append(summary, text);
+    if (chunk.description) {
+      const descriptionTitle = document.createElement("h5");
+      descriptionTitle.textContent = "Image / table description";
+      const description = document.createElement("div");
+      description.className = "chunk-text";
+      description.textContent = chunk.description;
+      details.append(descriptionTitle, description);
+    }
+    content.append(preview, details);
+    const pageCell = document.createElement("td");
+    const pages = document.createElement("div");
+    pages.className = "chunk-pages";
+    for (const page of chunk.pages) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "page-button";
+      button.textContent = String(page);
+      button.setAttribute("aria-label", `View PDF page ${page} for chunk ${chunk.index + 1}`);
+      button.addEventListener("click", () => showPDF(id, data.version, page));
+      pages.append(button);
+    }
+    if (!chunk.pages.length) pages.textContent = "Unavailable";
+    pageCell.append(pages);
+    row.append(number, content, pageCell);
+    chunkList.append(row);
+  }
+  chunkPrevious.disabled = offset === 0;
+  chunkNext.disabled = !data.has_more;
+  setText("#chunks-range", `Showing ${offset + 1}–${offset + data.chunks.length}`);
+}
+
+async function loadChunks(id, offset) {
+  const request = ++chunkRequest;
+  message(chunkMessage, "Loading chunks…");
+  chunkPrevious.disabled = true;
+  chunkNext.disabled = true;
+  try {
+    const data = await responseJSON(await fetch(`/api/v1/documents/${encodeURIComponent(id)}/chunks?offset=${offset}`, {
+      headers: { Accept: "application/json" }, cache: "no-store",
+    }));
+    if (request !== chunkRequest) return;
+    if (!Array.isArray(data.chunks)) throw new Error("The server returned an invalid chunk list");
+    if (!data.chunks.length) {
+      message(chunkMessage, "No chunks are available for this document.");
+      return;
+    }
+    chunkOffset = offset;
+    renderChunks(data, id, offset);
+    document.querySelector(".chunk-table-scroll").scrollTop = 0;
+    chunkViewer.hidden = false;
+    message(chunkMessage, "");
+    const page = data.chunks.flatMap((chunk) => chunk.pages)[0] || 1;
+    showPDF(id, data.version, page);
+  } catch (error) {
+    if (request !== chunkRequest) return;
+    message(chunkMessage, `Could not load chunks: ${error.message}. Refresh the document status to retry.`, "error");
+    chunkPrevious.disabled = true;
+    chunkNext.disabled = true;
+  }
+}
+
+chunkPrevious.addEventListener("click", () => loadChunks(trackedId, Math.max(0, chunkOffset - chunkPageSize)));
+chunkNext.addEventListener("click", () => loadChunks(trackedId, chunkOffset + chunkPageSize));
+
+searchForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const query = document.querySelector("#search-query").value.trim();
+  const documentID = document.querySelector("#search-document").value.trim();
+  if (!query) {
+    message(searchMessage, "Enter a search query.", "error");
+    return;
+  }
+  const body = { query, top_k: Number(document.querySelector("#search-limit").value) };
+  if (documentID) body.document_id = documentID;
+  const answering = event.submitter === answerButton;
+  searchButton.disabled = true;
+  answerButton.disabled = true;
+  searchResults.replaceChildren();
+  answerResult.hidden = true;
+  message(searchMessage, answering ? "Retrieving evidence and generating an answer…" : "Searching indexed chunks…");
+  try {
+    const data = await responseJSON(await fetch(answering ? "/api/v1/answer" : "/api/v1/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify(body),
+    }));
+    const results = answering ? data.sources : data.results;
+    if (!Array.isArray(results)) throw new Error("The server returned an invalid result list");
+    if (answering) {
+      if (typeof data.answer !== "string" || typeof data.insufficient_evidence !== "boolean") {
+        throw new Error("The server returned an invalid answer");
+      }
+      answerText.replaceChildren();
+      let offset = 0;
+      for (const match of data.answer.matchAll(/\[(\d+)\]/g)) {
+        answerText.append(document.createTextNode(data.answer.slice(offset, match.index)));
+        const citation = document.createElement("a");
+        citation.href = `#answer-source-${match[1]}`;
+        citation.textContent = match[0];
+        answerText.append(citation);
+        offset = match.index + match[0].length;
+      }
+      answerText.append(document.createTextNode(data.answer.slice(offset)));
+      document.querySelector("#answer-insufficient").hidden = !data.insufficient_evidence;
+      answerResult.hidden = false;
+    }
+    if (!results.length) {
+      message(searchMessage, "No indexed chunks found for this scope.");
+      return;
+    }
+    message(searchMessage, `Found ${results.length} ranked chunk${results.length === 1 ? "" : "s"}.`);
+    for (const [index, result] of results.entries()) {
+      const card = document.createElement("article");
+      card.className = "search-result";
+      if (answering) card.id = `answer-source-${result.id}`;
+      const head = document.createElement("div");
+      head.className = "search-result-head";
+      const title = document.createElement("strong");
+      title.textContent = `${answering ? `[${result.id}]` : `${index + 1}.`} ${result.filename} · chunk ${result.chunk_index + 1}`;
+      const score = document.createElement("span");
+      score.textContent = `Hybrid rank score: ${result.score.toFixed(5)}`;
+      head.append(title, score);
+      const meta = document.createElement("div");
+      meta.className = "search-result-meta";
+      meta.textContent = `Document ${result.document_id} · version ${result.version} · pages ${result.pages.length ? result.pages.join(", ") : "unavailable"} · vector rank ${result.vector_rank ?? "—"} · keyword rank ${result.keyword_rank ?? "—"}`;
+      const text = document.createElement("div");
+      text.className = "search-result-text";
+      text.textContent = result.text || "This chunk contains no extracted text.";
+      card.append(head, meta, text);
+      if (result.text_truncated || result.description_truncated) {
+        const truncated = document.createElement("div");
+        truncated.className = "search-result-meta";
+        truncated.textContent = "The evidence sent to the model was truncated.";
+        card.append(truncated);
+      }
+      if (result.description) {
+        const details = document.createElement("details");
+        const summary = document.createElement("summary");
+        summary.textContent = "Image / table description";
+        const description = document.createElement("div");
+        description.className = "search-result-text";
+        description.textContent = result.description;
+        details.append(summary, description);
+        card.append(details);
+      }
+      const link = document.createElement("a");
+      const page = result.pages[0] || 1;
+      link.href = `/api/v1/documents/${encodeURIComponent(result.document_id)}/pdf?version=${encodeURIComponent(result.version)}#page=${page}`;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = result.pages.length ? `Open source PDF · page ${page} ↗` : "Open source PDF ↗";
+      card.append(link);
+      searchResults.append(card);
+    }
+  } catch (error) {
+    message(searchMessage, `${answering ? "Answer generation" : "Search"} failed: ${error.message}`, "error");
+  } finally {
+    searchButton.disabled = false;
+    answerButton.disabled = false;
+  }
+});
 
 async function fetchStatus(id, version) {
   try {
@@ -140,6 +347,10 @@ async function fetchStatus(id, version) {
 
 function track(id) {
   stopTracking();
+  chunkRequest += 1;
+  chunkViewer.hidden = true;
+  pdfFrame.removeAttribute("src");
+  message(chunkMessage, "Chunks will appear when processing is complete.");
   trackedId = id.trim();
   documentIdInput.value = trackedId;
   statusEmpty.hidden = false;

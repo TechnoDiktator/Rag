@@ -20,6 +20,7 @@ import (
 	"atlasrag/api-go/internal/documents"
 	"atlasrag/api-go/internal/objectstore"
 	"atlasrag/api-go/internal/outbox"
+	"atlasrag/api-go/internal/search"
 	"atlasrag/api-go/internal/upload"
 	"atlasrag/api-go/internal/web"
 )
@@ -125,6 +126,17 @@ func main() {
 	})
 	mux.Handle("POST /api/v1/documents", uploadHandler)
 	mux.Handle("GET /api/v1/documents/{documentID}/status", statusHandler)
+	mux.Handle("GET /api/v1/documents/{documentID}/chunks", documents.NewChunkHandler(repository, logger))
+	mux.Handle("GET /api/v1/documents/{documentID}/pdf", documents.NewPDFHandler(repository, store, logger))
+	var searchEmbedder search.Embedder
+	var answerGenerator search.AnswerGenerator
+	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
+		searchEmbedder = search.NewOpenAIEmbedder(key)
+		answerGenerator = search.NewOpenAIAnswerGenerator(key)
+	}
+	searchHandler := search.NewHandler(search.NewRepository(db), searchEmbedder, logger)
+	mux.Handle("POST /api/v1/search", searchHandler)
+	mux.Handle("POST /api/v1/answer", search.NewAnswerHandler(searchHandler, answerGenerator))
 	frontend := web.Handler()
 	mux.Handle("GET /{$}", frontend)
 	mux.Handle("GET /app.css", frontend)

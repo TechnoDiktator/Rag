@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 )
@@ -11,6 +12,19 @@ import (
 type MinIO struct {
 	client *minio.Client
 	bucket string
+}
+
+func (store *MinIO) OpenPDF(ctx context.Context, key string) (io.ReadSeekCloser, time.Time, error) {
+	object, err := store.client.GetObject(ctx, store.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, time.Time{}, fmt.Errorf("open PDF object: %w", err)
+	}
+	info, err := object.Stat()
+	if err != nil {
+		object.Close()
+		return nil, time.Time{}, fmt.Errorf("stat PDF object: %w", err)
+	}
+	return object, info.LastModified, nil
 }
 
 func NewMinIO(client *minio.Client, bucket string) *MinIO {

@@ -9,7 +9,7 @@ current limitations, start with the [repository README](../README.md).
 
 ## Components
 
-- [Go API](apps/api-go/README.md): PDF upload, status, embedded frontend and
+- [Go API](apps/api-go/README.md): PDF upload, status, hybrid search, answer generation, embedded frontend and
   transactional outbox publisher.
 - [Python worker](apps/workers-python/README.md): PDF extraction, chunking and
   optional OpenAI descriptions and embeddings.
@@ -21,8 +21,8 @@ current limitations, start with the [repository README](../README.md).
 
 ## Status
 
-The ingestion pipeline and optional indexing code are in place. The optional
-OpenAI path has mocked API and isolated pgvector tests, but has not been
-verified end to end in the worker container with live OpenAI calls. Retrieval,
-answer generation and deployment are future work. `COMPLETED` means the
-configured processing path finished; indexing is disabled by default.
+The ingestion pipeline, optional indexing and prototype hybrid retrieval are
+in place, as is prototype GPT-4o answer generation. Live indexing and retrieval
+have been exercised; answer generation and overall quality still need live
+evaluation. Production deployment is future work. `COMPLETED` means the configured processing path finished;
+indexing is disabled by default.
