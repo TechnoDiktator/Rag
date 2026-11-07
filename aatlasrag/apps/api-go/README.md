@@ -4,12 +4,15 @@
 
 Run the API with these environment variables set:
 
-- `DATABASE_URL` — PostgreSQL connection URL. Apply the root `migrations/`
-  before starting the API.
+- `DATABASE_URL` — PostgreSQL connection URL. For the local Compose setup,
+  use `postgres://atlasrag:local-dev-postgres-password@localhost:5433/atlasrag?sslmode=disable`
+  unless you changed `POSTGRES_HOST_PORT` in `infra/.env`.
 - `S3_ENDPOINT` — S3-compatible endpoint, such as `localhost:9000`.
 - `S3_ACCESS_KEY` and `S3_SECRET_KEY` — object-storage credentials.
 - `S3_BUCKET` — an existing bucket for PDF objects.
 - `S3_USE_SSL` — optional boolean, defaults to `false`.
+- `KAFKA_BROKERS` — optional comma-separated broker addresses, defaults to
+  `localhost:9092`.
 - `MAX_UPLOAD_BYTES` — optional maximum PDF size in bytes, defaults to 50 MiB.
 - `HTTP_ADDR` — optional listen address, defaults to `:8080`.
 
@@ -38,3 +41,20 @@ because the document transaction may have committed successfully.
 
 This initial endpoint has no authentication or tenant assignment; add those
 before exposing it to untrusted clients.
+
+## Outbox publisher and status endpoint
+
+The API polls `outbox_events` and publishes `document.uploaded` events to the
+Kafka topic with the same name. Kafka messages are keyed by `document_id`.
+After Kafka acknowledges a message, the API marks the outbox row as published.
+If publishing succeeds but updating PostgreSQL fails, the event may be sent
+again; consumers should deduplicate using `event_id`.
+
+Query ingestion progress with:
+
+```text
+GET /api/v1/documents/{document_id}/status
+```
+
+The response includes document status/version/page count and the parse job
+stage/status/error.

@@ -6,15 +6,20 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
+	"github.com/segmentio/kafka-go"
 
 	"atlasrag/api-go/internal/documents"
 	"atlasrag/api-go/internal/objectstore"
+	"atlasrag/api-go/internal/outbox"
 	"atlasrag/api-go/internal/upload"
 )
 
@@ -47,18 +52,21 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+	kafkaBrokers := kafkaBrokerList()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
 
 	db, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
+		cancel()
 		logger.Fatalf("configure PostgreSQL: %v", err)
 	}
-	defer db.Close()
 	if err := db.Ping(ctx); err != nil {
+		cancel()
+		db.Close()
 		logger.Fatalf("connect to PostgreSQL: %v", err)
 	}
+	cancel()
 
 	useSSL, err := optionalBoolEnv("S3_USE_SSL", false)
 	if err != nil {
@@ -69,19 +77,40 @@ func main() {
 		Secure: useSSL,
 	})
 	if err != nil {
+		db.Close()
 		logger.Fatalf("configure object storage: %v", err)
 	}
+	ctx, cancel = context.WithTimeout(context.Background(), 10*time.Second)
 	bucketExists, err := minioClient.BucketExists(ctx, s3Bucket)
+	cancel()
 	if err != nil {
+		db.Close()
 		logger.Fatalf("check object-storage bucket: %v", err)
 	}
 	if !bucketExists {
+		db.Close()
 		logger.Fatalf("object-storage bucket %q does not exist", s3Bucket)
 	}
 
 	store := objectstore.NewMinIO(minioClient, s3Bucket)
 	repository := documents.NewRepository(db)
 	uploadHandler := upload.NewHandler(repository, store, maxUploadBytes, logger)
+	statusHandler := documents.NewStatusHandler(repository, logger)
+	publisher := outbox.NewPublisher(db, &kafka.Writer{
+		Addr:         kafka.TCP(kafkaBrokers...),
+		Topic:        "document.uploaded",
+		Balancer:     &kafka.Hash{},
+		RequiredAcks: kafka.RequireAll,
+		Async:        false,
+	}, logger)
+
+	runCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	publisherDone := make(chan struct{})
+	go func() {
+		defer close(publisherDone)
+		publisher.Run(runCtx)
+	}()
 
 	addr := os.Getenv("HTTP_ADDR")
 	if addr == "" {
@@ -94,6 +123,7 @@ func main() {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	mux.Handle("POST /api/v1/documents", uploadHandler)
+	mux.Handle("GET /api/v1/documents/{documentID}/status", statusHandler)
 
 	server := &http.Server{
 		Addr:              addr,
@@ -101,9 +131,47 @@ func main() {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	logger.Printf("API listening on %s", addr)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		logger.Fatalf("serve API: %v", err)
+	serverErr := make(chan error, 1)
+	go func() {
+		serverErr <- server.ListenAndServe()
+	}()
+
+	select {
+	case err := <-serverErr:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logger.Printf("serve API: %v", err)
+		}
+	case <-runCtx.Done():
 	}
+
+	stop()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		logger.Printf("shut down API: %v", err)
+	}
+	<-publisherDone
+	if err := publisher.Close(); err != nil {
+		logger.Printf("close Kafka publisher: %v", err)
+	}
+	db.Close()
+}
+
+func kafkaBrokerList() []string {
+	value := os.Getenv("KAFKA_BROKERS")
+	if value == "" {
+		value = "localhost:9092"
+	}
+	var brokers []string
+	for _, broker := range strings.Split(value, ",") {
+		if broker = strings.TrimSpace(broker); broker != "" {
+			brokers = append(brokers, broker)
+		}
+	}
+	if len(brokers) == 0 {
+		log.Fatal("KAFKA_BROKERS must contain at least one broker address")
+	}
+	return brokers
 }
 
 func requiredEnv(name string) (string, error) {

@@ -12,6 +12,8 @@ here. Keep contracts independent of Go and Python implementation details.
   document registration. It contains an object-storage key, never PDF bytes.
 - `event_id` is the outbox row ID and is the deduplication key for consumers.
 - `correlation_id` should be retained by downstream events for tracing.
+- The Python consumer commits a Kafka offset only after it has persisted parse
+  completion or a permanent PDF-parse failure in PostgreSQL.
 
 For incompatible changes, publish a new event version and schema rather than
 silently changing the meaning of v1.

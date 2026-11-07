@@ -15,6 +15,7 @@ import (
 
 var ErrDuplicateContent = errors.New("document content already exists")
 var ErrCommitOutcomeUnknown = errors.New("document registration commit outcome is unknown")
+var ErrDocumentNotFound = errors.New("document not found")
 
 type Registration struct {
 	DocumentID    uuid.UUID

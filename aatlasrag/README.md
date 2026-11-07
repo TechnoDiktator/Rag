@@ -19,11 +19,12 @@ client-facing requests; Python workers process documents asynchronously.
 2. **Upload API in place:** accept PDFs, store them in S3-compatible object
    storage, and transactionally create the document, version, parse job, and
    outbox event. See `apps/api-go/README.md` for configuration.
-3. Add an outbox publisher and process uploaded PDFs in a Python worker.
+3. **Async parse path in place:** publish outbox events to Kafka, parse PDFs
+   with the Python worker, and query document status.
 4. Add chunking, embeddings, and vector search.
 
-The initial PostgreSQL migration is in `migrations/`. The upload event schema
-and example are in `contracts/events/`.
+PostgreSQL migrations are in `migrations/`. The upload event schema and
+example are in `contracts/events/`.
 
 Start with one working path from PDF upload through processing before adding
 more services or infrastructure.

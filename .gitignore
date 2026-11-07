@@ -1,5 +1,6 @@
 # Python environments
 **/multi_modal_rag_env/
+**/rag_env/
 **/venv/
 **/.venv/
 **/env/
@@ -7,6 +8,9 @@
 
 # Environment variables
 **/.env
+
+# Local MinIO source checkout used as the Docker build context
+/minio-src/
 
 # Python cache
 **/__pycache__/

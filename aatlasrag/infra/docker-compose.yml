@@ -10,8 +10,9 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-atlasrag}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-postgres-password}
     ports:
-      # Bind to loopback so the database is reachable only from this computer.
-      - "127.0.0.1:5432:5432"
+      # Use a configurable host port (5433 by default) to avoid colliding with
+      # a PostgreSQL installation already running on the usual port 5432.
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-5433}:5432"
     volumes:
       # Keep database files when the container is recreated.
       - postgres_data:/var/lib/postgresql/data
@@ -19,6 +20,8 @@ services:
       # would also run its destructive .down.sql file during database init.
       # This script runs once when postgres_data is first created.
       - ../migrations/000001_create_document_lifecycle.up.sql:/docker-entrypoint-initdb.d/001_create_document_lifecycle.sql:ro
+      - ../migrations/000002_create_document_pages.up.sql:/docker-entrypoint-initdb.d/002_create_document_pages.sql:ro
+      - ../migrations/000003_create_document_elements.up.sql:/docker-entrypoint-initdb.d/003_create_document_elements.sql:ro
     healthcheck:
       # Other services can wait for PostgreSQL to accept connections.
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
@@ -29,9 +32,15 @@ services:
     restart: unless-stopped
 
   minio:
-    image: minio/minio:latest
+    # Build the local MinIO Community Edition source checkout into an image.
+    # The clone is expected at <repo-root>/minio-src/minio-src.
+    image: atlasrag-minio:local
+    build:
+      context: ../../minio-src/minio-src
+      # Use AtlasRAG's build recipe instead of the upstream Dockerfile, which
+      # expects prebuilt release artifacts and the old upstream base image.
+      dockerfile: ../../aatlasrag/infra/minio/Dockerfile
     container_name: atlasrag-minio
-    command: server /data --console-address ":9001"
     environment:
       # MinIO implements the S3 API locally; no AWS account is needed.
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-atlasrag-local}
@@ -44,31 +53,79 @@ services:
     volumes:
       # Keep uploaded PDFs when the container is recreated.
       - minio_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9000/minio/health/ready >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
     restart: unless-stopped
 
-  create-minio-bucket:
-    # The MinIO client is a short-lived setup container, not another server.
-    image: minio/mc:latest
-    container_name: atlasrag-create-minio-bucket
-    depends_on:
-      - minio
+  kafka:
+    # Single-node KRaft broker for local development; no ZooKeeper is required.
+    image: apache/kafka:4.1.1
+    container_name: atlasrag-kafka
     environment:
-      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-atlasrag-local}
-      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-dev-minio-password}
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # INTERNAL is for Compose services; EXTERNAL is for the Go API on the host.
+      KAFKA_LISTENERS: INTERNAL://:29092,CONTROLLER://:29093,EXTERNAL://:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_NUM_PARTITIONS: 3
+    ports:
+      - "127.0.0.1:9092:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:29092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  python-worker:
+    build:
+      context: ../apps/workers-python
+      dockerfile: Dockerfile
+    container_name: atlasrag-python-worker
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-atlasrag}:${POSTGRES_PASSWORD:-local-dev-postgres-password}@postgres:5432/${POSTGRES_DB:-atlasrag}
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: document.uploaded
+      KAFKA_GROUP_ID: atlasrag-parser
+      # Large PDFs can take longer than Kafka's default five-minute poll interval.
+      KAFKA_MAX_POLL_INTERVAL_MS: ${KAFKA_MAX_POLL_INTERVAL_MS:-1800000}
+      S3_ENDPOINT: minio:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-atlasrag-local}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-local-dev-minio-password}
       S3_BUCKET: ${S3_BUCKET:-atlasrag-documents}
-    entrypoint: ["/bin/sh", "-c"]
-    # Wait until MinIO accepts connections, then create the bucket if it is absent.
-    # --ignore-existing makes this safe to run again after a restart.
-    command:
-      - >-
-        until mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"; do
-          echo "MinIO is not ready yet; retrying";
-          sleep 2;
-        done;
-        mc mb --ignore-existing "local/$$S3_BUCKET"
-    restart: "no"
+      S3_USE_SSL: "false"
+      MAX_PDF_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
+      # Opt in to the slower multimodal extraction pipeline with "unstructured".
+      PDF_EXTRACTOR: ${PDF_EXTRACTOR:-pypdf}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   # Named volumes are managed by Docker and survive `docker compose down`.
   postgres_data:
   minio_data:
+  kafka_data:
