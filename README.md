@@ -12,9 +12,13 @@ multimodal notebook. They are prototypes, not the deployed AtlasRAG backend.
 > **Current scope:** PDF upload, asynchronous processing, chunk storage and
 > optional vector creation are implemented. A lightweight frontend supports
 > uploads, status tracking, chunk inspection, hybrid search and prototype
-> grounded answer generation. Live indexing and retrieval have been exercised;
-> answer generation and overall quality still need live evaluation. Production
+> grounded answer generation. Live indexing, retrieval and one answer example
+> have been exercised; overall quality still needs evaluation. Production
 > deployment is not yet implemented.
+
+For detailed architecture and ingestion/retrieval diagrams, database schema,
+screenshots, and step-by-step Windows setup, see the
+[AtlasRAG application guide](aatlasrag/README.md).
 
 ## Architecture
 
@@ -59,13 +63,13 @@ and is intended for development, not as a hardened production image.
 
 | Component | Responsibility |
 | --- | --- |
-| Go API | Validates uploads, publishes outbox events, serves status and performs prototype hybrid chunk search. |
+| Go API | Validates uploads, publishes outbox events, serves the UI, retrieves chunks and generates answers. |
 | PostgreSQL | Stores document versions, parse jobs, events, pages, elements, chunks and source references. |
 | pgvector | Stores optional 1,536-dimensional chunk embeddings in PostgreSQL. |
 | MinIO | Stores original PDFs and extracted image assets behind an S3-compatible API. |
 | Kafka | Carries `document.uploaded` events from the API to the worker. |
 | Python worker | Consumes events, verifies and parses PDFs, chunks content and optionally generates descriptions and embeddings. |
-| OpenAI, optional | `gpt-4o` describes images/tables; `text-embedding-3-small` embeds searchable text. |
+| OpenAI, optional | `gpt-4o` describes images/tables and generates answers; `text-embedding-3-small` embeds searchable text and queries. |
 
 ## Document processing flow
 
@@ -207,10 +211,11 @@ apply migrations.
 | --- | --- | --- |
 | `PDF_EXTRACTOR` | `pypdf` | Use `unstructured` for layout, image/table extraction and OCR. |
 | `OPENAI_INDEXING_ENABLED` | `false` | Enable billable image/table descriptions and text embeddings. |
-| `OPENAI_API_KEY` | unset | Required only when OpenAI indexing is enabled; keep it in ignored `infra/.env`. |
+| `OPENAI_API_KEY` | unset | Required by the worker for OpenAI indexing and separately by the host Go API for search/answers. Keep keys out of Git. |
 
-Set these in `aatlasrag/infra/.env` and rebuild/recreate the worker after
-changing configuration. Unstructured model weights may download on first use
+Set the worker's settings in `aatlasrag/infra/.env` and rebuild/recreate the
+worker after changing configuration; set the API key separately in the host
+Go API process for search and answers. Unstructured model weights may download on first use
 and can require significant CPU, memory and time. Previously processed
 documents are **not** automatically reprocessed when settings change.
 
@@ -228,6 +233,10 @@ for size limits and error behavior.
 | `GET /healthz` | API process health response. |
 | `POST /api/v1/documents` | Upload one PDF as multipart field `file`; returns `202` and a document ID. |
 | `GET /api/v1/documents/{document_id}/status` | Read the document and parse-job status. |
+| `GET /api/v1/documents/{document_id}/chunks` | Read a paginated list of chunks and source pages. |
+| `GET /api/v1/documents/{document_id}/pdf` | Stream the source PDF for a document version. |
+| `POST /api/v1/search` | Retrieve chunks using hybrid ranking. |
+| `POST /api/v1/answer` | Generate an answer from retrieved chunks and return numbered sources. |
 
 An optional `X-Correlation-ID` upload header must contain a UUID. The API
 currently has **no authentication or tenant assignment** and should not be
@@ -260,8 +269,8 @@ outputs are examples, not proof that all PDF types work.
   varied PDFs, including scanned documents.
 - Add a reprocessing workflow, authentication, observability, bounded retries,
   a dead-letter queue, and safe cleanup for orphaned objects.
-- Test live answer generation end to end. Status and retry handling currently
-  reflect a local-development ingestion pipeline.
+- Evaluate live answer generation more broadly. Status and retry handling
+  currently reflect a local-development ingestion pipeline.
 - Design deployment separately. A future Render deployment could self-host
   MinIO with persistent storage, but must address backups, security, broker
   hosting, service credentials and operating costs. No Render deployment

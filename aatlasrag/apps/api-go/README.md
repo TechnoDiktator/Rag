@@ -144,7 +144,8 @@ calling GPT-4o. The model is instructed to abstain when evidence is insufficient
 valid numeric citation IDs are checked, but factual support and completeness
 are not verified. Weak retrieval can still produce misleading answers, so check
 the sources. Provider or invalid-answer failures return an error rather than a
-fabricated answer. Live answer quality has not yet been evaluated. The API is
+fabricated answer. One live answer was observed; answer quality has not been
+systematically evaluated. The API is
 unauthenticated and has no rate or budget controls.
 
 Restart/rebuild the Go API to pick up server and embedded UI changes. The

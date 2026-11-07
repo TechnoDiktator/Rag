@@ -49,8 +49,9 @@ characters within each page. There are no title, table or image references in
 that mode. Blank pages produce no chunks. Existing documents are not
 automatically backfilled; changing extractor or chunking requires reprocessing
 through a future workflow. Migration 000004 is required before running the new
-worker. The current `COMPLETED` status indicates parsing and chunking only,
-not retrieval readiness. By default, embeddings are not generated.
+worker. The current `COMPLETED` status indicates that the configured processing
+path finished, not that embeddings necessarily exist. By default, embeddings
+are not generated.
 
 ## Optional OpenAI descriptions and embeddings
 
@@ -66,7 +67,7 @@ The worker describes image/table chunks with `gpt-4o`, embeds the text plus
 description with `text-embedding-3-small` (1536 dimensions), and stores
 vectors in `document_chunk_embeddings`. It stores references to original
 assets separately; it does not embed image bytes. The Go API can search indexed
-chunks; question answering is not implemented. Existing documents are not automatically
+chunks and generate answers from them. Existing documents are not automatically
 reprocessed.
 
 API, validation or database failures prevent completion and are logged; the
