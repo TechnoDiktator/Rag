@@ -19,7 +19,10 @@ from kafka import KafkaConsumer
 from minio import Minio
 from pypdf import PdfReader
 
+from atlasrag_workers.chunking import DocumentChunk, chunk_elements, chunk_pages
+
 if TYPE_CHECKING:
+    from atlasrag_workers.indexing import IndexedChunk, OpenAIIndexer
     from atlasrag_workers.unstructured_pdf import ExtractedElement
 
 LOGGER = logging.getLogger("atlasrag.worker")
@@ -135,6 +138,7 @@ class DocumentWorker:
         object_client: Minio,
         max_pdf_bytes: int = 50 << 20,
         pdf_extractor: str = "pypdf",
+        indexer: OpenAIIndexer | None = None,
     ) -> None:
         if pdf_extractor not in {"pypdf", "unstructured"}:
             raise ValueError("PDF_EXTRACTOR must be pypdf or unstructured")
@@ -143,6 +147,7 @@ class DocumentWorker:
         self.object_client = object_client
         self.max_pdf_bytes = max_pdf_bytes
         self.pdf_extractor = pdf_extractor
+        self.indexer = indexer
 
     def process(self, raw_event: bytes, message_key: bytes | None = None) -> None:
         try:
@@ -199,8 +204,11 @@ class DocumentWorker:
                 for page_number in text_by_page
             ]
 
-        self._save_pages_and_complete(document_id, version, pages, elements)
-        LOGGER.info("document %s v%s parsed: %d pages", document_id, version, len(pages))
+        chunks = chunk_elements(elements) if elements is not None else chunk_pages(pages)
+        indexed = self.indexer.index(chunks, elements) if self.indexer else None
+        self._save_pages_and_complete(document_id, version, pages, elements, chunks, indexed)
+        LOGGER.info("document %s v%s parsed: %d pages, %d chunks",
+                    document_id, version, len(pages), len(chunks))
 
     def _download_pdf(self, object_key: str) -> bytes:
         response = self.object_client.get_object(self.bucket, object_key)
@@ -263,10 +271,18 @@ class DocumentWorker:
 
     def _save_pages_and_complete(
         self, document_id: str, version: int, pages: list[PageText],
-        elements: list[ExtractedElement] | None = None,
+        elements: list[ExtractedElement] | None,
+        chunks: list[DocumentChunk],
+        indexed: list[IndexedChunk] | None = None,
     ) -> None:
+        if indexed is not None and len(indexed) != len(chunks):
+            raise ValueError("embedding count does not match chunk count")
         with psycopg.connect(self.database_url) as connection:
             with connection.cursor() as cursor:
+                cursor.execute(
+                    "DELETE FROM document_chunks WHERE document_id = %s AND version = %s",
+                    (document_id, version),
+                )
                 cursor.execute(
                     "DELETE FROM document_pages WHERE document_id = %s AND version = %s",
                     (document_id, version),
@@ -285,11 +301,11 @@ class DocumentWorker:
                         for page in pages
                     ],
                 )
-                if elements is not None:
-                    cursor.execute(
-                        "DELETE FROM document_elements WHERE document_id = %s AND version = %s",
-                        (document_id, version),
-                    )
+                cursor.execute(
+                    "DELETE FROM document_elements WHERE document_id = %s AND version = %s",
+                    (document_id, version),
+                )
+                if elements:
                     cursor.executemany(
                         """
                         INSERT INTO document_elements
@@ -302,6 +318,52 @@ class DocumentWorker:
                              element.category, json.dumps(element.content), element.image_object_key)
                             for index, element in enumerate(elements)
                         ],
+                    )
+                if chunks:
+                    cursor.executemany(
+                        """
+                        INSERT INTO document_chunks (document_id, version, chunk_index, content)
+                        VALUES (%s, %s, %s, %s)
+                        """,
+                        [(document_id, version, index, chunk.text)
+                         for index, chunk in enumerate(chunks)],
+                    )
+                    cursor.executemany(
+                        """
+                        INSERT INTO document_chunk_sources
+                            (document_id, version, chunk_index, source_index, page_number, element_index)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """,
+                        [(document_id, version, chunk_index, source_index,
+                          source.page_number, source.element_index)
+                         for chunk_index, chunk in enumerate(chunks)
+                         for source_index, source in enumerate(chunk.sources)],
+                    )
+                if indexed is not None:
+                    from atlasrag_workers.indexing import EMBEDDING_MODEL, VISION_MODEL
+
+                    cursor.executemany(
+                        """
+                        INSERT INTO document_chunk_embeddings
+                            (document_id, version, chunk_index, embedding_model, vision_model,
+                             description, searchable_text, embedding)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s::vector)
+                        """,
+                        [(document_id, version, index, EMBEDDING_MODEL,
+                          VISION_MODEL if item.description is not None else None,
+                          item.description, item.searchable_text, json.dumps(item.embedding))
+                         for index, item in enumerate(indexed)],
+                    )
+                    cursor.execute(
+                        """UPDATE document_versions SET embedding_model = %s
+                           WHERE document_id = %s AND version = %s""",
+                        (EMBEDDING_MODEL, document_id, version),
+                    )
+                else:
+                    cursor.execute(
+                        """UPDATE document_versions SET embedding_model = NULL
+                           WHERE document_id = %s AND version = %s""",
+                        (document_id, version),
                     )
                 cursor.execute(
                     """
@@ -356,6 +418,20 @@ def main() -> None:
         secret_key=required_env("S3_SECRET_KEY"),
         secure=secure,
     )
+    index_setting = os.getenv("OPENAI_INDEXING_ENABLED", "false").lower()
+    if index_setting not in {"1", "true", "yes", "0", "false", "no"}:
+        raise RuntimeError("OPENAI_INDEXING_ENABLED must be a boolean")
+    indexer = None
+    if index_setting in {"1", "true", "yes"}:
+        from openai import OpenAI
+        from atlasrag_workers.indexing import OpenAIIndexer
+
+        indexer = OpenAIIndexer(
+            OpenAI(api_key=required_env("OPENAI_API_KEY"), max_retries=0),
+            object_client,
+            bucket,
+        )
+        LOGGER.warning("OpenAI indexing enabled: document content will be sent to OpenAI")
     consumer = KafkaConsumer(
         os.getenv("KAFKA_TOPIC", EVENT_TYPE),
         bootstrap_servers=required_env("KAFKA_BOOTSTRAP_SERVERS").split(","),
@@ -368,6 +444,7 @@ def main() -> None:
     worker = DocumentWorker(
         database_url, bucket, object_client, max_pdf_bytes,
         os.getenv("PDF_EXTRACTOR", "pypdf"),
+        indexer,
     )
 
     stopping = False

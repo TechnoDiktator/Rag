@@ -13,6 +13,7 @@ dependencies = [
     "pypdf>=5.1.0",
     "unstructured[pdf]==0.18.14",
     "unstructured-inference==1.0.5",
+    "openai>=1.40,<3",
 ]
 
 [tool.setuptools.packages.find]

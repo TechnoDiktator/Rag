@@ -28,13 +28,16 @@ The first MinIO build downloads the Go build image and compiles the source, so
 it may take several minutes. On the first start with an empty database volume,
 Compose applies the forward migrations from `migrations/`. Initialization
 scripts do not run again when the database volume already exists. To add the
-new element table to an existing local database that already has migrations
-000001 and 000002, run this once from `infra/`:
+new chunk tables to an existing local database that already has migrations
+000001 through 000003, run this once from `infra/`:
 
 ```powershell
-Get-Content ..\migrations\000003_create_document_elements.up.sql -Raw |
+Get-Content ..\migrations\000004_create_document_chunks.up.sql -Raw |
   docker exec -i atlasrag-postgres psql -v ON_ERROR_STOP=1 -U atlasrag -d atlasrag
 ```
+
+For an older database, first apply any missing migrations in numerical order;
+see the migrations README. Initialization scripts only run on a new volume.
 
 The Compose stack also starts Kafka and the Python PDF worker. The Go API runs
 on the host and connects to Kafka at `localhost:9092`; the worker uses the
@@ -45,6 +48,37 @@ extractor; there is no separate Poppler service. To enable it, add
 `PDF_EXTRACTOR=unstructured` to `infra/.env`, then run
 `docker compose up -d --build python-worker`. Existing documents are not
 automatically reprocessed. See the worker README for limitations.
+
+## Optional OpenAI indexing and pgvector
+
+Compose uses `pgvector/pgvector:pg17-trixie`, a PostgreSQL 17 image with
+pgvector. The explicit Debian Trixie variant matches the collation library
+used by the original local `postgres:17` image in this environment; the
+generic `pg17` image uses Debian Bookworm and caused a collation mismatch.
+On an existing PostgreSQL 17 volume, initialization scripts do not rerun.
+Back up the database before changing the database image, then recreate the
+PostgreSQL service using the same volume:
+
+```powershell
+docker compose up -d --no-deps postgres
+```
+
+After switching, verify that each existing database's recorded collation
+version matches its actual version before resuming writes. A matching version
+does not repair indexes or data modified while the versions mismatched; review
+and rebuild affected objects as appropriate using the backup. Do not simply
+refresh the recorded collation version to suppress a warning.
+
+Verify database health and that migrations 000001 through 000004 exist, then
+apply 000005 once using the command in the migrations README. Never remove the
+volume to perform this upgrade. PostgreSQL upgrades across major versions
+require a separate migration process.
+
+To opt in to billable indexing, set `OPENAI_INDEXING_ENABLED=true` and
+`OPENAI_API_KEY` in the ignored `.env` file and rebuild/recreate the worker.
+Document text, tables and images are sent to OpenAI. Leave the feature
+disabled for local-only processing. See the worker README for cost, retry and
+privacy limitations.
 
 ## Create the MinIO bucket
 

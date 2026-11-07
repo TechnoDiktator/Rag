@@ -1,5 +1,17 @@
 # Go API
 
+## Document workspace
+
+The Go API serves the HTML, CSS and JavaScript frontend at `/`. Open
+`http://localhost:8080/` after starting the API, or use the port configured by
+`HTTP_ADDR`. The page uploads one PDF and automatically polls its status;
+you can also look up a previously returned document ID. Search and answer
+generation are not yet available. The UI shares the API's lack of
+authentication and is intended for local development.
+
+The frontend is embedded in the Go binary under `internal/web/static`, so it
+does not require a separate server or a particular working directory.
+
 ## Upload a PDF
 
 Run the API with these environment variables set:
@@ -18,7 +30,8 @@ Run the API with these environment variables set:
 
 The API checks PostgreSQL connectivity and that the configured bucket exists
 when it starts. For local PostgreSQL and MinIO setup, see `infra/README.md`;
-Compose applies the migration to a new database volume and creates the bucket.
+Compose applies the migrations to a new database volume. Create the bucket
+manually through the MinIO Console before starting the API.
 
 Send one multipart file using the `file` field:
 

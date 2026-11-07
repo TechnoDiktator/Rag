@@ -97,20 +97,34 @@ class WorkerExtractionTests(unittest.TestCase):
 
         self.worker.pdf_extractor = "unstructured"
         elements = [
-            ExtractedElement(1, "Title", {"text": "Title"}, None),
-            ExtractedElement(1, "Table", {"text": "Table text"}, None),
+            ExtractedElement(1, "Title", {"type": "Title", "text": "Title", "metadata": {"page_number": 1}}, None),
+            ExtractedElement(1, "Table", {"type": "Table", "text": "Table text", "metadata": {"page_number": 1}}, None),
         ]
         with patch("atlasrag_workers.unstructured_pdf.extract_elements", return_value=elements):
             self.worker.process(json.dumps(self.event).encode())
         args = self.worker._save_pages_and_complete.call_args.args
         self.assertEqual(args[2][0].text, "Title\n\nTable text")
         self.assertEqual(args[3], elements)
+        self.assertTrue(args[4])
 
     def test_unstructured_error_propagates_without_completing(self):
         self.worker.pdf_extractor = "unstructured"
         with patch("atlasrag_workers.unstructured_pdf.extract_elements", side_effect=RuntimeError("model unavailable")):
             with self.assertRaisesRegex(RuntimeError, "model unavailable"):
                 self.worker.process(json.dumps(self.event).encode())
+        self.worker._save_pages_and_complete.assert_not_called()
+
+    def test_chunking_error_propagates_without_completing(self):
+        with patch("atlasrag_workers.consumer.chunk_pages", side_effect=ValueError("chunk failure")):
+            with self.assertRaisesRegex(ValueError, "chunk failure"):
+                self.worker.process(json.dumps(self.event).encode())
+        self.worker._save_pages_and_complete.assert_not_called()
+
+    def test_indexing_failure_does_not_complete_document(self):
+        self.worker.indexer = Mock()
+        self.worker.indexer.index.side_effect = RuntimeError("indexing failed")
+        with self.assertRaisesRegex(RuntimeError, "indexing failed"):
+            self.worker.process(json.dumps(self.event).encode())
         self.worker._save_pages_and_complete.assert_not_called()
 
 

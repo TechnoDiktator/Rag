@@ -1,165 +1,264 @@
-# Retrieval-Augmented Generation (RAG) (Multimodal)
+# AtlasRAG
 
-A small RAG project that indexes company reference documents, retrieves the
-most relevant text for a natural-language question, and uses an OpenAI chat
-model to generate answers from that context. It also includes a history-aware
-conversation mode that rewrites follow-up questions before searching, plus a
-notebook-based multi-modal RAG workflow for PDF documents that include text,
-images, and tables.
+AtlasRAG is an in-progress, event-driven document ingestion backend for
+multimodal retrieval-augmented generation (RAG). A Go API accepts PDFs and
+records their lifecycle; a Python worker parses and chunks their contents.
+Optional OpenAI-based enrichment creates image and table descriptions and
+stores text embeddings in PostgreSQL with pgvector.
 
-## Project Flow
+The repository also contains earlier LangChain/Chroma experiments and a
+multimodal notebook. They are prototypes, not the deployed AtlasRAG backend.
 
-```mermaid
-flowchart TD
-	A[Text files in project/docs] --> B[DirectoryLoader]
-	B --> C[CharacterTextSplitter<br/>chunk size: 1000]
-	C --> D[OpenAI text-embedding-3-small]
-	D --> E[(ChromaDB<br/>project/db/chroma_db)]
+> **Current scope:** PDF upload, asynchronous processing, chunk storage and
+> optional vector creation are implemented. A lightweight frontend supports
+> uploads and status tracking. Search, answer generation and production
+> deployment are not yet implemented in AtlasRAG.
+> The optional indexing path has been tested with mocked OpenAI calls and an
+> isolated pgvector database; a live OpenAI/worker-container run remains
+> unverified.
 
-	P[PDF in multi_modal_rag/docs] --> P1[Unstructured PDF parsing]
-	P1 --> P2[Title-based chunking]
-	P2 --> P3[Text + tables + images extracted]
-	P3 --> D
+## Architecture
 
-	Q[User query] --> R[Chroma retriever<br/>top 5 results]
-	E --> R
-	R --> S[Relevant document chunks]
-	S --> T[Prompt with retrieved context]
-	T --> U[ChatOpenAI gpt-4o]
-	U --> V[Generated answer]
+```text
+                         Local development
 
-	H[Conversation history] --> W[Rewrite follow-up question]
-	Q --> W
-	W --> R3[Chroma retriever<br/>top 3 results]
-	E --> R3
-	R3 --> X[History-aware prompt]
-	H --> X
-	X --> Y[ChatOpenAI gpt-4o]
-	Y --> Z[Answer and updated history]
+    Client
+      |
+      | PDF upload / status request
+      v
+ +---------------------+      source PDFs       +----------------------+
+ | Go API              |----------------------->| MinIO                |
+ | HTTP + outbox       |                        | PDFs and image assets|
+ | publisher           |                        +----------+-----------+
+ +----+-----------+----+                                   ^
+      |           |                                        |
+      | document  | document.uploaded                      | PDF / images
+      | and event |                                        |
+      v           v                                        |
+ +------------+  +-------------------+        +------------+-----------+
+ | PostgreSQL |  | Kafka             |------->| Python worker          |
+ | + pgvector |  | document.uploaded |        | parse, chunk, index    |
+ | metadata,  |  +-------------------+        +------------+-----------+
+ | chunks and |       event consumer                       |
+ | vectors    |<-------------------------------------------+
+ +------------+    pages, elements, chunks and optional vectors
+                                                           |
+                                                           | optional:
+                                                           | content and images
+                                                           v
+                                                   +------------------+
+                                                   | OpenAI API       |
+                                                   | vision + vectors |
+                                                   +------------------+
 ```
 
-## Repository Layout
+In the local configuration, PostgreSQL, MinIO, Kafka and the Python worker
+run in Docker Compose; the Go API runs on the host. MinIO uses a local Docker
+volume and an image built from a separate Community Edition source checkout.
+No AWS account is required. The local MinIO source is unmaintained upstream
+and is intended for development, not as a hardened production image.
+
+| Component | Responsibility |
+| --- | --- |
+| Go API | Validates and stores uploads, registers documents, publishes outbox events and serves status requests. |
+| PostgreSQL | Stores document versions, parse jobs, events, pages, elements, chunks and source references. |
+| pgvector | Stores optional 1,536-dimensional chunk embeddings in PostgreSQL. |
+| MinIO | Stores original PDFs and extracted image assets behind an S3-compatible API. |
+| Kafka | Carries `document.uploaded` events from the API to the worker. |
+| Python worker | Consumes events, verifies and parses PDFs, chunks content and optionally generates descriptions and embeddings. |
+| OpenAI, optional | `gpt-4o` describes images/tables; `text-embedding-3-small` embeds searchable text. |
+
+## Document processing flow
+
+```text
+Client           Go API             PostgreSQL       Kafka       Python worker
+  |                |                    |               |               |
+  |-- upload PDF ->|                    |               |               |
+  |                |-- store PDF in MinIO               |               |
+  |                |-- document + job + outbox event -->|               |
+  |<- 202 + ID ----|                    |               |               |
+  |                |-- publish outbox event ----------->|               |
+  |                |                    |               |-- event ----->|
+  |                |                    |               |               |-- read PDF from MinIO
+  |                |                    |               |               |-- parse and chunk
+  |                |                    |               |               |-- optional OpenAI calls
+  |                |                    |<------------- save results ----|
+  |                |                    |               |<- commit offset
+  |-- get status ->|-- read status ---->|               |               |
+  |<- status ------|                    |               |               |
+```
+
+1. **Upload:** `POST /api/v1/documents` accepts one multipart PDF in the
+   `file` field. The API checks its PDF signature and size, computes SHA-256,
+   and stores the original in MinIO.
+2. **Register and publish:** the API records the document, version, parse job
+   and `document.uploaded` outbox event in one PostgreSQL transaction. A
+   publisher in the API sends the event to Kafka; the event carries the object
+   key, not PDF bytes. Duplicate shared-content uploads return `409 Conflict`.
+3. **Parse:** the worker consumes the event, downloads the object and verifies
+   its size and hash. The default `pypdf` mode extracts page text. Optional
+   `unstructured` high-resolution mode also extracts structured elements,
+   tables and images, with OCR support where applicable.
+4. **Chunk:** `pypdf` text is split within page boundaries. Unstructured uses
+   title-based chunking with a 3,000-character maximum, 2,400-character soft
+   threshold and 500-character combination threshold. Chunk sources preserve
+   page and element references; image bytes live in MinIO, not vector
+   metadata.
+5. **Optional indexing:** when explicitly enabled, image/table chunks are
+   described by `gpt-4o`. Chunk text and any description are embedded using
+   `text-embedding-3-small` and stored in pgvector. Plain text does not need
+   a vision call. The text embedding model does not directly interpret images.
+6. **Persist and acknowledge:** pages, elements, chunks, source links and
+   optional vectors are written in a database transaction. The worker commits
+   the Kafka offset after processing. Status is available through
+   `GET /api/v1/documents/{document_id}/status`.
+
+The current `COMPLETED` status means the configured processing path completed.
+It does **not** by itself guarantee embeddings exist or that the document is
+searchable. With indexing disabled, no OpenAI calls or embeddings are made.
+
+## Data and reliability
+
+```text
+documents -> document_versions -> ingestion_jobs / document_pages
+                       |          document_elements -> MinIO image keys
+                       +--------> document_chunks -> document_chunk_sources
+                                       |
+                                       +-> document_chunk_embeddings (optional)
+
+outbox_events -> Kafka document.uploaded -> worker
+```
+
+- The outbox reduces the risk of losing an event between document
+  registration and publication. Kafka delivery can still be duplicated;
+  document outputs are replaced transactionally on reprocessing.
+- Permanent PDF validation failures are recorded as failed. Infrastructure,
+  extraction, indexing or database errors stop the worker without
+  acknowledging the message. The current restart behavior can repeatedly
+  retry a failing message; a dead-letter queue and bounded retries are not
+  implemented.
+- Image uploads happen before database persistence. Failed or repeated
+  processing may leave unreferenced MinIO objects; automatic cleanup is not
+  implemented.
+- The database is the source of truth for document and job status. Migrations
+  are numbered SQL scripts; existing Docker volumes do not automatically
+  apply newly added initialization scripts.
+
+## Local development
+
+### Prerequisites
+
+- Docker Desktop with Compose, Go, and a local checkout of MinIO Community
+  Edition at `minio-src/minio-src`. See the exact build requirements in
+  [infrastructure setup](aatlasrag/infra/README.md).
+- An existing MinIO bucket, created through the local console.
+- PostgreSQL with pgvector for migration `000005`. Fresh Compose volumes use
+  the configured pgvector image; an existing PostgreSQL volume requires the
+  upgrade and migration steps in the infrastructure guide.
+- Python 3.12 and the worker dependencies for running Python tests outside
+  Docker. The worker image itself includes Poppler and Tesseract; these are
+  **not** separate Compose services.
+
+### Start the stack
+
+From PowerShell:
+
+```powershell
+cd aatlasrag\infra
+# Only copy if you don't already have a .env you want to keep.
+Copy-Item .env.example .env
+docker compose up -d --build
+docker compose ps
+```
+
+Create the configured bucket at `http://localhost:9001`. Then configure and
+start the Go API on the host using the instructions in the
+[Go API guide](aatlasrag/apps/api-go/README.md) and
+[infrastructure guide](aatlasrag/infra/README.md). Local defaults expose
+PostgreSQL at `localhost:5433`, MinIO at `localhost:9000`, and Kafka at
+`localhost:9092`; the worker uses Compose service names internally.
+Open the frontend at `http://localhost:8080/` (or use the port configured by
+`HTTP_ADDR`, such as `http://localhost:18080/`). It is served by the Go API
+and uses the same-origin upload and status endpoints. Save the document ID to
+look it up again; the frontend does not maintain a document list.
+
+For existing volumes, apply any missing migrations **once, in order**, as
+described in the [migration guide](aatlasrag/migrations/README.md). Back up
+data before changing the PostgreSQL image. Do not remove Docker volumes to
+apply migrations.
+
+### Extraction and indexing options
+
+| Setting | Default | Effect |
+| --- | --- | --- |
+| `PDF_EXTRACTOR` | `pypdf` | Use `unstructured` for layout, image/table extraction and OCR. |
+| `OPENAI_INDEXING_ENABLED` | `false` | Enable billable image/table descriptions and text embeddings. |
+| `OPENAI_API_KEY` | unset | Required only when OpenAI indexing is enabled; keep it in ignored `infra/.env`. |
+
+Set these in `aatlasrag/infra/.env` and rebuild/recreate the worker after
+changing configuration. Unstructured model weights may download on first use
+and can require significant CPU, memory and time. Previously processed
+documents are **not** automatically reprocessed when settings change.
+
+**Privacy and cost:** enabling OpenAI indexing sends chunk text, table HTML
+and image content to OpenAI and incurs API charges. The current Kafka
+redelivery/restart behavior may repeat chargeable requests; there is no
+per-chunk billing cache, budget limit or dead-letter queue. Only enable it for
+documents you are authorized to send. See the [worker guide](aatlasrag/apps/workers-python/README.md)
+for size limits and error behavior.
+
+### API overview
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /healthz` | API process health response. |
+| `POST /api/v1/documents` | Upload one PDF as multipart field `file`; returns `202` and a document ID. |
+| `GET /api/v1/documents/{document_id}/status` | Read the document and parse-job status. |
+
+An optional `X-Correlation-ID` upload header must contain a UUID. The API
+currently has **no authentication or tenant assignment** and should not be
+exposed to untrusted clients as-is.
+
+## Repository layout
 
 ```text
 Rag/
-├── README.md
-├── project/
-│   ├── 1_ingestion_pipeline.py
-│   ├── 2_retreival_pipeline.py
-│   ├── 3_answer_generation.py
-│   ├── 4_history_aware_rag_with_generation.py
-│   ├── docs/                 # Source .txt documents
-│   └── db/chroma_db/         # Persisted Chroma vector store
-└── multi_modal_rag/
-    ├── 8_multi_modal_rag.ipynb
-    ├── docs/                 # PDF source documents
-    ├── images/               # Extracted image outputs
-    ├── requirements.txt
-    └── multi_modal_rag_env/  # Optional environment folder
+|-- aatlasrag/
+|   |-- apps/api-go/          Go HTTP API, embedded frontend and Kafka publisher
+|   |-- apps/workers-python/  PDF extraction, chunking and optional indexing
+|   |-- contracts/events/     Versioned Kafka event schema and example
+|   |-- infra/                Local Compose setup and MinIO build recipe
+|   |-- migrations/           PostgreSQL and pgvector schema migrations
+|   `-- docs/adr/             Architecture decision records
+|-- multi_modal_rag_notebook/ Multimodal Unstructured / Chroma prototype
+`-- rag_practice/             Earlier text-RAG and retrieval experiments
 ```
 
-## How It Works
+The notebook uses its own Chroma-based experimental pipeline; AtlasRAG's
+backend stores optional vectors in PostgreSQL instead. The notebook's saved
+outputs are examples, not proof that all PDF types work.
 
-1. `1_ingestion_pipeline.py` loads every `.txt` file from `project/docs/`.
-2. Documents are split into chunks of up to 1,000 characters.
-3. `text-embedding-3-small` converts each chunk into a vector embedding.
-4. ChromaDB stores the embeddings in `project/db/chroma_db/` using cosine similarity.
-5. `2_retreival_pipeline.py` loads the persisted store and retrieves the five most relevant chunks for its query.
-6. `3_answer_generation.py` adds the retrieved chunks to a prompt and asks `gpt-4o` to produce an answer.
-7. `4_history_aware_rag_with_generation.py` uses conversation history to rewrite follow-up questions, retrieves three relevant chunks, generates an answer, and stores the exchange in memory.
-8. `multi_modal_rag/8_multi_modal_rag.ipynb` handles PDF-based RAG: it parses PDFs with `unstructured`, extracts tables and images, chunks the content with title-based logic, and stores the enriched chunks in Chroma for retrieval.
+## Limitations and next steps
 
-The included documents cover Google, Microsoft, Nvidia, SpaceX, and Tesla.
+- Build a retrieval endpoint that embeds queries with the **same model** as
+  stored vectors, retrieves relevant chunks and returns page/asset citations.
+- Add grounded answer generation and evaluate retrieval quality with real
+  questions and varied PDFs, including scanned documents.
+- Add a reprocessing workflow, authentication, observability, bounded retries,
+  a dead-letter queue, and safe cleanup for orphaned objects.
+- Test the worker container and live OpenAI integration end to end. Status and
+  retry handling currently reflect a local-development ingestion pipeline.
+- Design deployment separately. A future Render deployment could self-host
+  MinIO with persistent storage, but must address backups, security, broker
+  hosting, service credentials and operating costs. No Render deployment
+  configuration is implemented here.
 
-## Multimodal Notebook Architecture
+## Further reading
 
-The notebook workflow is designed for PDFs that contain mixed content such as
-paragraph text, tables, and embedded images. It uses `unstructured` to parse
-raw PDF elements, chunks those elements by title/structure, and stores the
-resulting content in a Chroma vector database for retrieval.
-
-```mermaid
-flowchart LR
-    A[PDF Document] --> B[unstructured.partition_pdf]
-    B --> C[Extracted elements]
-    C --> D[Title-based chunking]
-    D --> E[Text chunks]
-    D --> F[Table blocks]
-    D --> G[Image blocks]
-    E --> H[Combined content metadata]
-    F --> H
-    G --> H
-    H --> I[OpenAI embeddings]
-    I --> J[(Chroma vector store)]
-    K[User question] --> L[Retriever]
-    J --> L
-    L --> M[Relevant multimodal chunks]
-    M --> N[ChatOpenAI answer generation]
-    N --> O[Final answer]
-```
-
-### Multimodal Flow Summary
-
-- PDF input is parsed into structured elements.
-- The notebook separates text, tables, and images.
-- Content is summarized and chunked into retrieval-friendly units.
-- Embeddings are created and saved into Chroma.
-- Retrieved chunks are passed to the model for grounded answer generation.
-
-## Setup
-
-Create a `.env` file in `project/` with an OpenAI API key:
-
-```env
-OPENAI_API_KEY=your_api_key_here
-```
-
-The project dependencies are already present in the included virtual
-environment. To use a different environment, install the packages imported by
-the scripts, including `langchain-community`, `langchain-text-splitters`,
-`langchain-openai`, `langchain-chroma`, and `python-dotenv`.
-
-The generation scripts require access to both the OpenAI embedding model
-`text-embedding-3-small` and the chat model `gpt-4o`. API usage may incur costs.
-
-## Run
-
-Run commands from the `project/` directory so the relative paths resolve
-correctly:
-
-```powershell
-cd project
-python 1_ingestion_pipeline.py
-python 2_retreival_pipeline.py
-python 3_answer_generation.py
-python 4_history_aware_rag_with_generation.py
-```
-
-For the notebook-based multimodal workflow, open:
-
-```text
-multi_modal_rag/8_multi_modal_rag.ipynb
-```
-
-This notebook expects a PDF file in `multi_modal_rag/docs/`, installs the
-required packages, and uses `unstructured` to parse PDF content, extract
-images and tables, and build a vector store for retrieval.
-
-The ingestion script skips rebuilding the database when
-`db/chroma_db/` already exists. Remove that directory before rerunning
-ingestion if the source documents have changed.
-
-## Example Query
-
-The retrieval script currently searches for:
-
-```text
-How much did Microsoft pay to acquire GitHub?
-```
-
-It prints the query and the retrieved document chunks as context.
-
-The answer-generation script uses the same query and prints a model-generated
-response based only on the retrieved chunks. The history-aware script starts an
-interactive session; type `quit` to exit. Its conversation history is kept in
-memory for the duration of that process and is not persisted to disk.
+- [AtlasRAG application overview](aatlasrag/README.md)
+- [Go API](aatlasrag/apps/api-go/README.md)
+- [Python worker](aatlasrag/apps/workers-python/README.md)
+- [Local infrastructure](aatlasrag/infra/README.md)
+- [Database migrations](aatlasrag/migrations/README.md)
+- [Event contract](aatlasrag/contracts/events/README.md)
+- [Multimodal design notes](aatlasrag/multimodal_README.md)

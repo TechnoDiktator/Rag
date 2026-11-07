@@ -2,7 +2,8 @@
 # or reuse these local credentials in a deployed environment.
 services:
   postgres:
-    image: postgres:17
+    # Match the original PostgreSQL 17 Debian Trixie collation libraries.
+    image: pgvector/pgvector:pg17-trixie
     container_name: atlasrag-postgres
     environment:
       # These values come from infra/.env, with local-only defaults as a fallback.
@@ -22,6 +23,8 @@ services:
       - ../migrations/000001_create_document_lifecycle.up.sql:/docker-entrypoint-initdb.d/001_create_document_lifecycle.sql:ro
       - ../migrations/000002_create_document_pages.up.sql:/docker-entrypoint-initdb.d/002_create_document_pages.sql:ro
       - ../migrations/000003_create_document_elements.up.sql:/docker-entrypoint-initdb.d/003_create_document_elements.sql:ro
+      - ../migrations/000004_create_document_chunks.up.sql:/docker-entrypoint-initdb.d/004_create_document_chunks.sql:ro
+      - ../migrations/000005_create_chunk_embeddings.up.sql:/docker-entrypoint-initdb.d/005_create_chunk_embeddings.sql:ro
     healthcheck:
       # Other services can wait for PostgreSQL to accept connections.
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
@@ -115,6 +118,9 @@ services:
       MAX_PDF_BYTES: ${MAX_UPLOAD_BYTES:-52428800}
       # Opt in to the slower multimodal extraction pipeline with "unstructured".
       PDF_EXTRACTOR: ${PDF_EXTRACTOR:-pypdf}
+      # Explicit opt-in: processing sends document content to OpenAI and incurs charges.
+      OPENAI_INDEXING_ENABLED: ${OPENAI_INDEXING_ENABLED:-false}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,30 +1,28 @@
-# AtlasRAG
+# AtlasRAG application
 
-Distributed multimodal document intelligence platform. The Go API handles
-client-facing requests; Python workers process documents asynchronously.
+AtlasRAG is the event-driven backend in this repository. It accepts PDF
+uploads through a Go API and processes them asynchronously with a Python
+worker, Kafka, PostgreSQL and self-hosted MinIO.
 
-## Repository layout
+For the architecture diagrams, document flow, local setup, API overview and
+current limitations, start with the [repository README](../README.md).
 
-- `apps/api-go` — Go HTTP API.
-- `apps/workers-python` — Python background processing workers.
-- `contracts/events` — schemas shared by services through Kafka.
-- `migrations` — PostgreSQL schema migrations.
-- `infra` — local development and deployment configuration.
-- `docs/adr` — architecture decision records.
+## Components
 
-## Build order
+- [Go API](apps/api-go/README.md): PDF upload, status, embedded frontend and
+  transactional outbox publisher.
+- [Python worker](apps/workers-python/README.md): PDF extraction, chunking and
+  optional OpenAI descriptions and embeddings.
+- [Infrastructure](infra/README.md): local Compose services and MinIO build.
+- [Migrations](migrations/README.md): PostgreSQL tables and pgvector schema.
+- [Event contracts](contracts/events/README.md): `document.uploaded` v1.
+- [Design notes](multimodal_README.md): broader architecture ideas; proposed
+  components there are not necessarily implemented.
 
-1. **Foundation in place:** document lifecycle migration and the
-   `document.uploaded` v1 Kafka contract.
-2. **Upload API in place:** accept PDFs, store them in S3-compatible object
-   storage, and transactionally create the document, version, parse job, and
-   outbox event. See `apps/api-go/README.md` for configuration.
-3. **Async parse path in place:** publish outbox events to Kafka, parse PDFs
-   with the Python worker, and query document status.
-4. Add chunking, embeddings, and vector search.
+## Status
 
-PostgreSQL migrations are in `migrations/`. The upload event schema and
-example are in `contracts/events/`.
-
-Start with one working path from PDF upload through processing before adding
-more services or infrastructure.
+The ingestion pipeline and optional indexing code are in place. The optional
+OpenAI path has mocked API and isolated pgvector tests, but has not been
+verified end to end in the worker container with live OpenAI calls. Retrieval,
+answer generation and deployment are future work. `COMPLETED` means the
+configured processing path finished; indexing is disabled by default.

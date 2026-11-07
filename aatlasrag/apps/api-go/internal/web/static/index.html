@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#101c35">
+  <title>AtlasRAG | Document workspace</title>
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <a class="brand" href="/" aria-label="AtlasRAG home">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <span>atlas<span class="brand-light">rag</span><small>DOCUMENT INTELLIGENCE</small></span>
+      </a>
+      <div class="side-label">WORKSPACE</div>
+      <nav aria-label="Workspace navigation">
+        <a class="nav-link active" href="#workspace"><span aria-hidden="true">▦</span> Overview <span class="nav-arrow">↗</span></a>
+        <a class="nav-link" href="#upload"><span aria-hidden="true">⇧</span> Upload document</a>
+        <a class="nav-link" href="#status"><span aria-hidden="true">◷</span> Track status</a>
+      </nav>
+      <div class="side-bottom">
+        <div class="sidebar-note">
+          <span class="note-icon" aria-hidden="true">✦</span>
+          <strong>Built for better context.</strong>
+          <p>From raw documents to structured knowledge, one step at a time.</p>
+        </div>
+        <div class="side-footer"><span class="online-dot"></span> Local workspace <span>v0.1</span></div>
+      </div>
+    </aside>
+
+    <main id="workspace">
+      <header class="topbar">
+        <div class="breadcrumbs">Workspace <span>/</span> <strong>Overview</strong></div>
+        <div class="topbar-right"><span class="environment"><span class="online-dot"></span> DOCUMENT WORKSPACE</span><span class="avatar">A</span></div>
+      </header>
+      <div class="content">
+        <div class="page-head">
+          <div>
+            <div class="eyebrow"><span class="eyebrow-line"></span> YOUR KNOWLEDGE WORKSPACE</div>
+            <h1>Every document has<br><em>something to say.</em></h1>
+            <p>Bring your PDFs into AtlasRAG and follow their journey from raw pages to structured knowledge.</p>
+            <a class="button button-light" href="#upload">Upload a document <span>↗</span></a>
+          </div>
+          <div class="hero-graphic" aria-hidden="true">
+            <div class="orbit orbit-one"></div><div class="orbit orbit-two"></div>
+            <div class="hero-card card-back"><i></i><i></i><i></i></div>
+            <div class="hero-card card-front"><span class="paper-icon">▤</span><i></i><i></i><i></i><b>PDF</b></div>
+            <span class="spark spark-one">✦</span><span class="spark spark-two">✳</span>
+            <span class="graphic-label">FROM FILES TO INSIGHTS</span>
+          </div>
+        </div>
+
+        <div class="section-heading">
+          <div><div class="eyebrow dark">GET STARTED <span> / 01</span></div><h2>Document workspace</h2><p>Upload a PDF or check the progress of a document you have already submitted.</p></div>
+          <span class="section-tag"><span></span> INGESTION PIPELINE</span>
+        </div>
+
+        <div class="workspace-grid">
+          <section class="panel upload-panel" id="upload" aria-labelledby="upload-title">
+            <div class="panel-top"><div><span class="panel-kicker">01 / ADD CONTENT</span><h3 id="upload-title">Upload a document</h3></div><span class="panel-icon" aria-hidden="true">↗</span></div>
+            <p class="panel-description">Add a PDF to start the ingestion process.</p>
+            <form id="upload-form">
+              <label class="dropzone" id="dropzone" for="file-input">
+                <input id="file-input" name="file" type="file" accept=".pdf,application/pdf">
+                <span class="upload-icon" aria-hidden="true">↑</span>
+                <strong id="file-label">Drop your PDF here</strong>
+                <span id="file-hint">or <span class="browse">browse files</span> from your device</span>
+                <small>ONE PDF AT A TIME · DEFAULT LIMIT 50 MB</small>
+              </label>
+              <div id="upload-message" class="message" role="status" aria-live="polite"></div>
+              <button id="upload-button" class="button button-primary" type="submit"><span>Start processing</span><span aria-hidden="true">↗</span></button>
+            </form>
+            <div class="privacy-note"><span aria-hidden="true">◇</span> If OpenAI indexing is enabled, document content is sent to OpenAI.</div>
+          </section>
+
+          <section class="panel status-panel" id="status" aria-labelledby="status-title">
+            <div class="panel-top"><div><span class="panel-kicker">02 / FOLLOW PROGRESS</span><h3 id="status-title">Document status</h3></div><span class="panel-icon" aria-hidden="true">◷</span></div>
+            <p class="panel-description">Enter a document ID to check its latest processing status.</p>
+            <form id="status-form" class="status-form">
+              <label for="document-id">DOCUMENT ID</label>
+              <div class="input-row"><input id="document-id" name="document_id" type="text" placeholder="Paste document ID" autocomplete="off" required><button class="button lookup-button" type="submit">Check <span aria-hidden="true">↗</span></button></div>
+            </form>
+            <div id="status-message" class="message" role="status" aria-live="polite"></div>
+            <div id="status-empty" class="empty-state"><div class="empty-icon" aria-hidden="true">⌁</div><strong>Nothing to track yet</strong><p>Upload a document or enter an ID above to see its status here.</p></div>
+            <div id="status-result" class="status-result" hidden>
+              <div class="result-head"><span class="result-label">CURRENT STATUS</span><span id="status-badge" class="status-badge"></span></div>
+              <div id="status-description" class="result-description"></div>
+              <dl class="details">
+                <div><dt>Document ID</dt><dd id="result-id"></dd></div>
+                <div><dt>Version</dt><dd id="result-version"></dd></div>
+                <div><dt>Pages</dt><dd id="result-pages"></dd></div>
+                <div><dt>Job</dt><dd id="result-job"></dd></div>
+                <div><dt>Last updated</dt><dd id="result-updated"></dd></div>
+              </dl>
+              <p id="result-error" class="result-error" hidden></p>
+              <div class="result-footer"><span id="poll-indicator"></span><button id="refresh-button" type="button" class="text-button">Refresh status ↻</button></div>
+            </div>
+          </section>
+        </div>
+
+        <section class="pipeline" aria-labelledby="pipeline-title">
+          <div><span class="panel-kicker">BEHIND THE SCENES</span><h3 id="pipeline-title">A little structure goes a long way.</h3><p>Your document moves through an asynchronous pipeline. Processing may take some time.</p></div>
+          <div class="pipeline-steps">
+            <div><span>01</span><strong>Upload</strong><small>Store the source</small></div>
+            <div><span>02</span><strong>Extract</strong><small>Read the content</small></div>
+            <div><span>03</span><strong>Chunk</strong><small>Organize context</small></div>
+            <div><span>04</span><strong>Index</strong><small>When configured</small></div>
+          </div>
+        </section>
+        <footer class="footer"><span>ATLASRAG <span class="footer-separator">/</span> DOCUMENT INTELLIGENCE</span><span>Search and answers are coming later.</span></footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

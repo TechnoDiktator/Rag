@@ -1,0 +1,67 @@
+The short answer is no, you cannot reliably or safely deploy this exact architecture on the AWS Free Tier.
+Your architecture is highly impressive—using a Go backend, a custom Python extraction worker, Apache Kafka for event-driven orchestration, PostgreSQL with pgvector, and MinIO for S3 emulation. However, it is far too heavy for the constraints of AWS's free offerings, and trying to force it into their free tier will result in regular container crashes (Out-Of-Memory errors) or unexpected credit card bills.
+
+Why AWS Free Tier Will Crush This Stack
+
+The core blocker is the t3.micro (or t2.micro) EC2 instance, which is the only compute size included in the AWS Free Tier. It provides just 1 vCPU and 1 GB of RAM.
+Here is how your docker-compose services stack up against a 1 GB RAM limit:
+1. Apache Kafka (4.1.1): Kafka runs on the JVM. Even a stripped-down, single-node KRaft broker natively wants at least 256MB–512MB of RAM just to idle stablely.
+2. PostgreSQL 17 + pgvector: While Postgres can idle on 100MB, performing vector similarity searches and building vector indexes (like HNSW) requires substantial memory allocation.
+3. Python Worker (unstructured / heavy PDF parsing): Python ML and data-parsing libraries are notorious memory hogs. If you toggle PDF_EXTRACTOR to unstructured or process image-heavy multimodal PDFs, a single parsing job can easily spike to 1GB–3GB of RAM, instantly triggering the Linux OOM (Out Of Memory) killer and crashing your EC2 instance.
+4. MinIO: Idles low, but requires memory overhead during concurrent file multi-part uploads.
+Running all four of these heavy enterprise services simultaneously inside a single 1GB RAM virtual machine will cause it to lock up completely.
+
+The "Production-Grade Resume" Migration Strategy
+
+To keep this project incredibly impressive for your resume while ensuring it actually runs for $0 to $5/month, you should pivot from hosting infrastructure locally in Docker to leveraging cloud-native managed services.
+Here is exactly how to adapt your architecture for cheap/free cloud deployment:
+[ Go Backend (Render / Fly.io Free) ]
+       │              │
+       │ (Events)     │ (SQL / Vectors)
+       ▼              ▼
+[ Upstash Kafka ]  [ Neon Serverless Postgres ]
+(Serverless Free)  (Free Tier w/ pgvector)
+       ▲
+       │ (Triggers jobs when a PDF is uploaded)
+       │
+[ Python Worker (Modal Labs Serverless) ] ──► [ AWS S3 Free Tier ]
+(Scales to 0, $30/mo free credits)           (Standard Object Storage)
+
+1. Swap MinIO for Actual AWS S3 (Free Tier)
+
+Since you are already using MinIO to emulate the S3 API, migrating is seamless. AWS gives you 5 GB of standard S3 storage free for 12 months.
+• Resume Impact: You get to explicitly state you are using real production AWS S3, rather than a local emulation tool.
+• Cost: $0.
+
+2. Swap Local Postgres for Neon or Supabase (Free Tier)
+
+Instead of running a Postgres container, use a serverless Postgres provider like Neon.tech or Supabase. Both offer generous free tiers that natively support the pgvector extension.
+• Resume Impact: Demonstrates experience configuring remote cloud databases and connection pooling.
+• Cost: $0.
+
+3. Swap Local Kafka for Upstash Kafka (Free Tier)
+
+Running a message broker yourself in production is an operational nightmare. Use Upstash, which offers a fully managed Serverless Kafka free tier (up to 10,000 messages per day).
+• Resume Impact: Shows recruiters you understand serverless event-driven architecture and decoupled systems without wasting compute resources.
+• Cost: $0.
+
+4. The Game Changer: Move the Python Worker to Modal Labs
+
+The Python worker is your bottleneck because it requires heavy compute to parse multimodal PDFs but sits idle 99% of the time.
+• Do not deploy this container to a standard web host. Instead, deploy it to Modal.com.
+• Modal allows you to turn your Python worker code into a serverless function that prints a container in the cloud only when a Kafka message arrives, processes the PDF using whatever CPU/RAM/GPU keys you define, and instantly scales back down to zero.
+• Cost: Modal gives every user $30 of free credits every single month. For a resume project, you will likely spend less than $0.50 a month.
+
+5. Deploy the Go Backend API to Render or Fly.io
+
+With the database, storage, message broker, and heavy worker offloaded, your Go API becomes extremely lightweight. It can easily run inside the free tiers of Render or Fly.io (which handles low-memory environments well because Go compiles down to a tiny, efficient native binary).
+
+What to Change in Your Code for Deployment
+
+When you move from your local docker-compose setup to this hybrid cloud production setup, you will drop the services block entirely for deployment and simply inject the new cloud environment variables into your host providers:
+• Change S3_ENDPOINT from minio:9000 to the official AWS S3 regional endpoint (://amazonaws.com).
+• Change S3_USE_SSL to "true".
+• Swap out KAFKA_BOOTSTRAP_SERVERS and DATABASE_URL with the connection strings provided by Upstash and Neon.
+To help map this out precisely, let me know:
+• Do you want to see a production equivalent configuration list for your Go and Python environments?
+• Would you like an example of how to easily port your Python worker into a serverless Modal function?

@@ -21,6 +21,7 @@ import (
 	"atlasrag/api-go/internal/objectstore"
 	"atlasrag/api-go/internal/outbox"
 	"atlasrag/api-go/internal/upload"
+	"atlasrag/api-go/internal/web"
 )
 
 const defaultMaxUploadBytes int64 = 50 << 20
@@ -124,6 +125,10 @@ func main() {
 	})
 	mux.Handle("POST /api/v1/documents", uploadHandler)
 	mux.Handle("GET /api/v1/documents/{documentID}/status", statusHandler)
+	frontend := web.Handler()
+	mux.Handle("GET /{$}", frontend)
+	mux.Handle("GET /app.css", frontend)
+	mux.Handle("GET /app.js", frontend)
 
 	server := &http.Server{
 		Addr:              addr,
