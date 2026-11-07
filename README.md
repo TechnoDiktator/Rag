@@ -32,15 +32,15 @@ document, the indexed content, and model response.
 
 **Home and upload**
 
-![AtlasRAG home and document workspace](images/Homepage.png)
+![AtlasRAG home and document workspace](aatlasrag/images/Homepage.png)
 
 **Upload, status and chunk workspace**
 
-![Upload and document status panels](images/chunking.png)
+![Upload and document status panels](aatlasrag/images/chunking.png)
 
 **Hybrid retrieval and generated answer**
 
-![Generated answer with source citations](images/hybrid_rerranking_and_retreival.png)
+![Generated answer with source citations](aatlasrag/images/hybrid_rerranking_and_retreival.png)
 
 The source panel shows retrieved chunks, descriptions and page links.
 PDF page navigation depends on the browser and does not highlight a chunk.
@@ -130,8 +130,8 @@ steps, not a strict ordering between those independent activities.
 2. **Outbox:** the event contains metadata and the object key, not PDF bytes.
    The publisher marks it published after Kafka acknowledgement. A crash
    between publish and marking can produce duplicates; this is not exactly-once
-   delivery. The [event example](contracts/events/document.uploaded.v1.example.json)
-   and [schema](contracts/events/document.uploaded.v1.schema.json) define v1.
+   delivery. The [event example](aatlasrag/contracts/events/document.uploaded.v1.example.json)
+   and [schema](aatlasrag/contracts/events/document.uploaded.v1.schema.json) define v1.
 3. **Validation and parsing:** the worker verifies the event, object size and
    hash, then reads pages with `pypdf`. Encrypted or unparseable PDFs fail.
    `pypdf` alone does not perform OCR or extract image/table structure.
@@ -206,7 +206,7 @@ still requested, but the GPT-4o answer call is skipped.
 
 ## Database schema
 
-The authoritative definitions are the [SQL migrations](migrations/). The
+The authoritative definitions are the [SQL migrations](aatlasrag/migrations/). The
 diagram shows declared foreign-key relationships; `outbox_events.aggregate_id`
 identifies the document in the event but is **not** a database foreign key.
 
@@ -343,7 +343,7 @@ independent workers for each stage exist. Current ordinary statuses are
 - Docker Desktop running with Compose, and Go **1.22 or newer** on the host.
 - A MinIO Community Edition source checkout at
   `<repo-root>\minio-src\minio-src`; Compose builds it using the local
-  [Dockerfile](infra/minio/Dockerfile). The checkout is unmaintained upstream
+  [Dockerfile](aatlasrag/infra/minio/Dockerfile). The checkout is unmaintained upstream
   and this image is for development only.
 - An OpenAI API key only for indexing, search and answer generation. Processing
   with default pypdf and indexing disabled does not need it. Never commit keys.
@@ -377,8 +377,8 @@ pgvector, MinIO, Kafka and the worker. Fresh PostgreSQL volumes automatically
 run the five forward migrations; existing volumes do **not** rerun
 initialization scripts. For an existing volume, inspect the schema, back up
 data if needed, and apply missing migrations **once in order**, following the
-[migration guide](migrations/README.md) and
-[PostgreSQL image/collation guidance](infra/README.md). Never rerun applied
+[migration guide](aatlasrag/migrations/README.md). Before switching PostgreSQL
+images, back up your data and check collation compatibility. Never rerun applied
 migrations or destroy volumes merely to upgrade.
 
 Default host addresses: PostgreSQL `localhost:5433`, MinIO API
@@ -544,7 +544,7 @@ OpenAI. A representative response shape is:
 
 This is illustrative, not an actual model result. Invalid requests return
 400, missing API key returns 503, provider failures/invalid model output
-return 502, and database failures return 500. See the [API guide](apps/api-go/README.md)
+return 502, and database failures return 500. See the [API guide](aatlasrag/apps/api-go/README.md)
 for details.
 
 ## Operations and troubleshooting
@@ -579,8 +579,8 @@ orphan cleanup, dead-letter handling and bounded retries remain future work.
   be orphaned after failure or reprocessing. There is no automatic cleanup.
 - Search uses exact cosine and query-time BM25 without vector/lexical indexes;
   performance should be measured before scaling.
-- See the [repository overview](../README.md), [Go API](apps/api-go/README.md),
-  [worker](apps/workers-python/README.md), [infrastructure](infra/README.md),
-  [migrations](migrations/README.md), and [event contract](contracts/events/README.md).
-  The longer [design notes](multimodal_README.md) include ideas not necessarily
+- See the [Go API](aatlasrag/apps/api-go/README.md),
+  [worker](aatlasrag/apps/workers-python/README.md), [Compose configuration](aatlasrag/infra/docker-compose.yml),
+  [migrations](aatlasrag/migrations/README.md), and [event contract](aatlasrag/contracts/events/README.md).
+  The longer [design notes](aatlasrag/multimodal_README.md) include ideas not necessarily
   implemented in the running system.
