@@ -36,6 +36,229 @@ let requestVersion = 0;
 let trackedId = "";
 let chunkOffset = 0;
 let chunkRequest = 0;
+let accessToken = "";
+let activeProject = "";
+let workspaceVersion = 0;
+let sessionVersion = 0;
+let projects = [];
+let pdfObjectURL = "";
+let pdfRequest = 0;
+let requestedPDFPage = null;
+const accountMessage = document.querySelector("#account-message");
+const dialogMessage = document.querySelector("#dialog-message");
+const workspaceDialog = document.querySelector("#workspace-dialog");
+const authForm = document.querySelector("#auth-form");
+const accountControls = document.querySelector("#account-controls");
+const projectForm = document.querySelector("#project-form");
+const projectControls = document.querySelector("#project-controls");
+const projectList = document.querySelector("#project-list");
+const documentSelect = document.querySelector("#project-documents");
+
+function accountNotice(text, kind = "") {
+  message(accountMessage, text, kind);
+  message(dialogMessage, text, kind);
+}
+
+function openWorkspaceDialog(section) {
+  document.querySelector("#dialog-title").textContent = section === "account" ? "Account" : section === "create" ? "Create a project" : "Project settings";
+  authForm.hidden = section !== "account" || Boolean(accessToken);
+  accountControls.hidden = section !== "account" || !accessToken;
+  projectForm.hidden = section !== "create";
+  projectControls.hidden = section !== "project";
+  message(dialogMessage, "");
+  if (!workspaceDialog.open) workspaceDialog.showModal();
+}
+
+function updateProjectList() {
+  projectList.replaceChildren();
+  for (const project of projects) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "project-link";
+    button.textContent = project.name;
+    button.setAttribute("aria-pressed", String(project.id === activeProject));
+    button.addEventListener("click", () => selectProject(project.id));
+    projectList.append(button);
+  }
+  document.querySelector("#project-empty").hidden = projects.length > 0;
+  const project = projects.find(item => item.id === activeProject);
+  document.querySelector("#active-project-label").textContent = project ? project.name : "No project selected";
+  document.querySelector("#project-settings-button").disabled = !project;
+}
+
+function resetWorkspace() {
+  workspaceVersion += 1;
+  stopTracking();
+  chunkRequest += 1;
+  pdfRequest += 1;
+  requestedPDFPage = null;
+  trackedId = "";
+  documentIdInput.value = "";
+  document.querySelector("#search-document").value = "";
+  document.querySelector("#search-query").value = "";
+  fileInput.value = "";
+  selectFile(null);
+  message(statusMessage, "");
+  message(chunkMessage, "");
+  message(searchMessage, "");
+  statusResult.hidden = true;
+  statusEmpty.hidden = false;
+  chunkViewer.hidden = true;
+  chunkList.replaceChildren();
+  searchResults.replaceChildren();
+  answerResult.hidden = true;
+  answerText.replaceChildren();
+  pdfFrame.removeAttribute("src");
+  pdfOpen.removeAttribute("href");
+  if (pdfObjectURL) URL.revokeObjectURL(pdfObjectURL);
+  pdfObjectURL = "";
+}
+
+function logout() {
+  sessionVersion += 1;
+  accessToken = "";
+  activeProject = "";
+  projects = [];
+  resetWorkspace();
+  updateProjectList();
+  documentSelect.replaceChildren(new Option("Select a document", ""));
+  document.querySelector("#sidebar-projects").hidden = true;
+  document.querySelector("#create-project-button").hidden = true;
+  document.querySelector("#project-settings-button").hidden = true;
+  document.querySelector("#account-button").textContent = "Log in / Register";
+  authForm.hidden = false;
+  accountControls.hidden = true;
+  projectForm.hidden = true;
+  projectControls.hidden = true;
+  document.querySelector("#auth-password").value = "";
+  if (workspaceDialog.open) workspaceDialog.close();
+}
+
+async function authenticatedFetch(path, options = {}) {
+  if (!accessToken) throw new Error("Please log in first.");
+  const token = accessToken;
+  const headers = new Headers(options.headers || {});
+  headers.set("Authorization", `Bearer ${token}`);
+  const response = await fetch(path, { ...options, headers, cache: "no-store" });
+  if (response.status === 401 && token === accessToken) {
+    logout();
+    accountNotice("Your login expired. Please log in again.", "error");
+    throw new Error("Your login expired. Please log in again.");
+  }
+  return response;
+}
+
+function projectPath(path) {
+  if (!activeProject) throw new Error("Select a project first.");
+  return `/api/v1/projects/${encodeURIComponent(activeProject)}${path}`;
+}
+
+async function loadProjects() {
+  const version = sessionVersion;
+  const data = await responseJSON(await authenticatedFetch("/api/v1/projects"));
+  if (version !== sessionVersion) return;
+  projects = data.projects;
+  updateProjectList();
+}
+
+async function loadProjectDocuments() {
+  documentSelect.replaceChildren(new Option("Select a document", ""));
+  if (!activeProject) return;
+  const version = workspaceVersion;
+  const data = await responseJSON(await authenticatedFetch(projectPath("/documents")));
+  if (version !== workspaceVersion) return;
+  for (const item of data.documents) documentSelect.add(new Option(`${item.filename} · ${item.status}`, item.id));
+}
+
+document.querySelector("#account-button").addEventListener("click", () => openWorkspaceDialog("account"));
+document.querySelector("#create-project-button").addEventListener("click", () => openWorkspaceDialog("create"));
+document.querySelector("#project-settings-button").addEventListener("click", () => openWorkspaceDialog("project"));
+document.querySelector("#close-dialog").addEventListener("click", () => workspaceDialog.close());
+
+authForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const version = sessionVersion;
+  const action = event.submitter.value;
+  const body = JSON.stringify({ email: document.querySelector("#auth-email").value, password: document.querySelector("#auth-password").value });
+  try {
+    const response = await fetch(`/api/v1/auth/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body });
+    if (version !== sessionVersion) return;
+    document.querySelector("#auth-password").value = "";
+    if (action === "register" && response.ok) {
+      accountNotice("Account created. Log in to continue.", "success");
+      return;
+    }
+    const data = await responseJSON(response);
+    accessToken = data.access_token;
+    if (!accessToken) throw new Error("The server returned no access token.");
+    await loadProjects();
+    if (version !== sessionVersion) return;
+    document.querySelector("#sidebar-projects").hidden = false;
+    document.querySelector("#create-project-button").hidden = false;
+    document.querySelector("#project-settings-button").hidden = false;
+    document.querySelector("#account-button").textContent = "Account";
+    workspaceDialog.close();
+    accountNotice("Logged in. Select or create a project.");
+  } catch (error) {
+    if (version !== sessionVersion) return;
+    accessToken = "";
+    accountNotice(error.message, "error");
+  }
+});
+
+document.querySelector("#logout-button").addEventListener("click", () => {
+  logout();
+  accountNotice("Logged out. The access token was removed from this browser.");
+});
+
+projectForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const version = sessionVersion;
+  try {
+    const name = document.querySelector("#project-name").value.trim();
+    const project = await responseJSON(await authenticatedFetch("/api/v1/projects", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+    }));
+    if (version !== sessionVersion) return;
+    await loadProjects();
+    if (version !== sessionVersion) return;
+    document.querySelector("#project-name").value = "";
+    workspaceDialog.close();
+    await selectProject(project.id);
+  } catch (error) { if (version === sessionVersion) accountNotice(error.message, "error"); }
+});
+
+async function selectProject(projectID) {
+  activeProject = projectID;
+  resetWorkspace();
+  updateProjectList();
+  const version = workspaceVersion;
+  try {
+    await loadProjectDocuments();
+    if (version === workspaceVersion) accountNotice("Project selected.");
+  } catch (error) { if (version === workspaceVersion) accountNotice(error.message, "error"); }
+}
+
+documentSelect.addEventListener("change", () => {
+  if (!documentSelect.value) return;
+  track(documentSelect.value);
+  workspaceDialog.close();
+  document.querySelector("#status").scrollIntoView();
+});
+document.querySelector("#member-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const version = workspaceVersion;
+  try {
+    const response = await authenticatedFetch(projectPath("/members"), {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: document.querySelector("#member-email").value }),
+    });
+    if (!response.ok) await responseJSON(response);
+    if (version !== workspaceVersion) return;
+    document.querySelector("#member-email").value = "";
+    accountNotice("Member added to this project.", "success");
+  } catch (error) { if (version === workspaceVersion) accountNotice(error.message, "error"); }
+});
 
 function message(element, text, kind = "") {
   element.textContent = text;
@@ -137,11 +360,22 @@ function renderStatus(data) {
   return status;
 }
 
-function showPDF(id, version, page) {
-  const url = `/api/v1/documents/${encodeURIComponent(id)}/pdf?version=${encodeURIComponent(version)}&page=${page}#page=${page}`;
-  pdfFrame.src = url;
-  pdfOpen.href = url;
-  setText("#pdf-heading", `Source PDF · requested page ${page}`);
+async function showPDF(id, version, page) {
+  const requestedWorkspace = workspaceVersion;
+  const request = ++pdfRequest;
+  try {
+    const response = await authenticatedFetch(projectPath(`/documents/${encodeURIComponent(id)}/pdf?version=${encodeURIComponent(version)}`));
+    if (!response.ok) await responseJSON(response);
+    const blob = await response.blob();
+    if (requestedWorkspace !== workspaceVersion || request !== pdfRequest) return;
+    if (pdfObjectURL) URL.revokeObjectURL(pdfObjectURL);
+    pdfObjectURL = URL.createObjectURL(blob);
+    pdfFrame.src = `${pdfObjectURL}#page=${page}`;
+    pdfOpen.href = `${pdfObjectURL}#page=${page}`;
+    setText("#pdf-heading", `Source PDF · requested page ${page}`);
+  } catch (error) {
+    if (requestedWorkspace === workspaceVersion && request === pdfRequest) message(chunkMessage, `Could not load PDF: ${error.message}`, "error");
+  }
 }
 
 function renderChunks(data, id, offset) {
@@ -201,7 +435,7 @@ async function loadChunks(id, offset) {
   chunkPrevious.disabled = true;
   chunkNext.disabled = true;
   try {
-    const data = await responseJSON(await fetch(`/api/v1/documents/${encodeURIComponent(id)}/chunks?offset=${offset}`, {
+    const data = await responseJSON(await authenticatedFetch(projectPath(`/documents/${encodeURIComponent(id)}/chunks?offset=${offset}`), {
       headers: { Accept: "application/json" }, cache: "no-store",
     }));
     if (request !== chunkRequest) return;
@@ -215,7 +449,8 @@ async function loadChunks(id, offset) {
     document.querySelector(".chunk-table-scroll").scrollTop = 0;
     chunkViewer.hidden = false;
     message(chunkMessage, "");
-    const page = data.chunks.flatMap((chunk) => chunk.pages)[0] || 1;
+    const page = requestedPDFPage || data.chunks.flatMap((chunk) => chunk.pages)[0] || 1;
+    requestedPDFPage = null;
     showPDF(id, data.version, page);
   } catch (error) {
     if (request !== chunkRequest) return;
@@ -239,17 +474,19 @@ searchForm.addEventListener("submit", async (event) => {
   const body = { query, top_k: Number(document.querySelector("#search-limit").value) };
   if (documentID) body.document_id = documentID;
   const answering = event.submitter === answerButton;
+  const requestedWorkspace = workspaceVersion;
   searchButton.disabled = true;
   answerButton.disabled = true;
   searchResults.replaceChildren();
   answerResult.hidden = true;
   message(searchMessage, answering ? "Retrieving evidence and generating an answer…" : "Searching indexed chunks…");
   try {
-    const data = await responseJSON(await fetch(answering ? "/api/v1/answer" : "/api/v1/search", {
+    const data = await responseJSON(await authenticatedFetch(projectPath(answering ? "/answer" : "/search"), {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json" },
       body: JSON.stringify(body),
     }));
+    if (requestedWorkspace !== workspaceVersion) return;
     const results = answering ? data.sources : data.results;
     if (!Array.isArray(results)) throw new Error("The server returned an invalid result list");
     if (answering) {
@@ -311,15 +548,14 @@ searchForm.addEventListener("submit", async (event) => {
       }
       const link = document.createElement("a");
       const page = result.pages[0] || 1;
-      link.href = `/api/v1/documents/${encodeURIComponent(result.document_id)}/pdf?version=${encodeURIComponent(result.version)}#page=${page}`;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.textContent = result.pages.length ? `Open source PDF · page ${page} ↗` : "Open source PDF ↗";
+      link.href = "#chunks";
+      link.textContent = result.pages.length ? `View source PDF · page ${page} ↗` : "View source PDF ↗";
+      link.addEventListener("click", () => track(result.document_id, page));
       card.append(link);
       searchResults.append(card);
     }
   } catch (error) {
-    message(searchMessage, `${answering ? "Answer generation" : "Search"} failed: ${error.message}`, "error");
+    if (requestedWorkspace === workspaceVersion) message(searchMessage, `${answering ? "Answer generation" : "Search"} failed: ${error.message}`, "error");
   } finally {
     searchButton.disabled = false;
     answerButton.disabled = false;
@@ -328,7 +564,7 @@ searchForm.addEventListener("submit", async (event) => {
 
 async function fetchStatus(id, version) {
   try {
-    const data = await responseJSON(await fetch(`/api/v1/documents/${encodeURIComponent(id)}/status`, {
+    const data = await responseJSON(await authenticatedFetch(projectPath(`/documents/${encodeURIComponent(id)}/status`), {
       headers: { Accept: "application/json" },
       cache: "no-store",
     }));
@@ -345,9 +581,11 @@ async function fetchStatus(id, version) {
   }
 }
 
-function track(id) {
+function track(id, page = null) {
   stopTracking();
   chunkRequest += 1;
+  pdfRequest += 1;
+  requestedPDFPage = page;
   chunkViewer.hidden = true;
   pdfFrame.removeAttribute("src");
   message(chunkMessage, "Chunks will appear when processing is complete.");
@@ -381,10 +619,12 @@ uploadForm.addEventListener("submit", async (event) => {
   }
   const form = new FormData();
   form.append("file", selectedFile);
+  const requestedWorkspace = workspaceVersion;
   uploadButton.disabled = true;
   message(uploadMessage, "Uploading document…");
   try {
-    const data = await responseJSON(await fetch("/api/v1/documents", { method: "POST", body: form }));
+    const data = await responseJSON(await authenticatedFetch(projectPath("/documents"), { method: "POST", body: form }));
+    if (requestedWorkspace !== workspaceVersion) return;
     if (typeof data.document_id !== "string" || !data.document_id) {
       throw new Error("The server did not return a document ID");
     }
@@ -394,8 +634,9 @@ uploadForm.addEventListener("submit", async (event) => {
     fileLabel.textContent = "Drop your PDF here";
     fileHint.textContent = "or browse files from your device";
     track(data.document_id);
+    await loadProjectDocuments();
   } catch (error) {
-    message(uploadMessage, `Upload failed: ${error.message}`, "error");
+    if (requestedWorkspace === workspaceVersion) message(uploadMessage, `Upload failed: ${error.message}`, "error");
   } finally {
     uploadButton.disabled = false;
   }

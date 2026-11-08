@@ -15,6 +15,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"atlasrag/api-go/internal/auth"
 )
 
 const (
@@ -64,7 +66,7 @@ WITH corpus AS MATERIALIZED (
   FROM document_chunk_embeddings e
   JOIN documents d ON d.id = e.document_id AND d.current_version = e.version
   JOIN document_chunks c ON c.document_id = e.document_id AND c.version = e.version AND c.chunk_index = e.chunk_index
-  WHERE e.embedding_model = $4 AND d.status = 'COMPLETED'
+  WHERE e.embedding_model = $4 AND d.status = 'COMPLETED' AND d.project_id = $7
     AND ($3::uuid IS NULL OR e.document_id = $3::uuid)
 ),
 query_terms AS (
@@ -118,11 +120,15 @@ FROM combined JOIN corpus c USING (document_id, version, chunk_index)
 ORDER BY combined.score DESC, c.document_id, c.version, c.chunk_index LIMIT $6`
 
 func (repo *Repository) Search(ctx context.Context, query string, vector []float64, documentID *uuid.UUID, limit int) ([]Result, error) {
+	projectID, ok := auth.ProjectID(ctx)
+	if !ok || projectID == uuid.Nil {
+		return nil, errors.New("project scope required")
+	}
 	encoded, err := json.Marshal(vector)
 	if err != nil {
 		return nil, fmt.Errorf("encode query vector: %w", err)
 	}
-	rows, err := repo.db.Query(ctx, searchSQL, query, string(encoded), documentID, Model, candidateLimit, limit)
+	rows, err := repo.db.Query(ctx, searchSQL, query, string(encoded), documentID, Model, candidateLimit, limit, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("search chunks: %w", err)
 	}

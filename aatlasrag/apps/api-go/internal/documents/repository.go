@@ -19,6 +19,8 @@ var ErrDocumentNotFound = errors.New("document not found")
 
 type Registration struct {
 	DocumentID    uuid.UUID
+	ProjectID     uuid.UUID
+	UploadedBy    uuid.UUID
 	EventID       uuid.UUID
 	CorrelationID uuid.UUID
 	Filename      string
@@ -71,10 +73,10 @@ func (repo *Repository) RegisterUploaded(ctx context.Context, registration Regis
 	_, err = tx.Exec(ctx, `
 		INSERT INTO documents (
 			id, filename, object_key, content_hash, mime_type,
-			file_size_bytes, current_version, status
-		) VALUES ($1, $2, $3, $4, 'application/pdf', $5, 1, 'QUEUED')
+			file_size_bytes, current_version, status, project_id, uploaded_by
+		) VALUES ($1, $2, $3, $4, 'application/pdf', $5, 1, 'QUEUED', $6, $7)
 	`, registration.DocumentID, registration.Filename, registration.ObjectKey,
-		registration.ContentHash, registration.FileSizeBytes)
+		registration.ContentHash, registration.FileSizeBytes, registration.ProjectID, registration.UploadedBy)
 	if err != nil {
 		return classifyDatabaseError("insert document", err)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/segmentio/kafka-go"
 
+	"atlasrag/api-go/internal/auth"
 	"atlasrag/api-go/internal/documents"
 	"atlasrag/api-go/internal/objectstore"
 	"atlasrag/api-go/internal/outbox"
@@ -55,6 +56,10 @@ func main() {
 		logger.Fatal(err)
 	}
 	kafkaBrokers := kafkaBrokerList()
+	jwtKeyPath, err := requiredEnv("JWT_PRIVATE_KEY_PATH")
+	if err != nil {
+		logger.Fatal(err)
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 
@@ -68,7 +73,25 @@ func main() {
 		db.Close()
 		logger.Fatalf("connect to PostgreSQL: %v", err)
 	}
+	var schemaReady bool
+	err = db.QueryRow(ctx, `
+		SELECT to_regclass('public.users') IS NOT NULL
+			AND to_regclass('public.projects') IS NOT NULL
+			AND to_regclass('public.project_members') IS NOT NULL
+			AND EXISTS (SELECT 1 FROM information_schema.columns
+				WHERE table_schema='public' AND table_name='documents' AND column_name='project_id')
+	`).Scan(&schemaReady)
+	if err != nil || !schemaReady {
+		cancel()
+		db.Close()
+		logger.Fatalf("project isolation schema unavailable; apply migration 000006: %v", err)
+	}
 	cancel()
+	authService, err := auth.NewService(db, jwtKeyPath, logger)
+	if err != nil {
+		db.Close()
+		logger.Fatalf("configure authentication: %v", err)
+	}
 
 	useSSL, err := optionalBoolEnv("S3_USE_SSL", false)
 	if err != nil {
@@ -124,10 +147,16 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	mux.Handle("POST /api/v1/documents", uploadHandler)
-	mux.Handle("GET /api/v1/documents/{documentID}/status", statusHandler)
-	mux.Handle("GET /api/v1/documents/{documentID}/chunks", documents.NewChunkHandler(repository, logger))
-	mux.Handle("GET /api/v1/documents/{documentID}/pdf", documents.NewPDFHandler(repository, store, logger))
+	mux.HandleFunc("POST /api/v1/auth/register", authService.Register)
+	mux.HandleFunc("POST /api/v1/auth/login", authService.Login)
+	mux.Handle("POST /api/v1/projects", authService.Authenticate(http.HandlerFunc(authService.CreateProject)))
+	mux.Handle("GET /api/v1/projects", authService.Authenticate(http.HandlerFunc(authService.ListProjects)))
+	mux.Handle("POST /api/v1/projects/{projectID}/members", authService.ProjectAccess(http.HandlerFunc(authService.AddMember), false))
+	mux.Handle("GET /api/v1/projects/{projectID}/documents", authService.ProjectAccess(http.HandlerFunc(authService.ListDocuments), false))
+	mux.Handle("POST /api/v1/projects/{projectID}/documents", authService.ProjectAccess(uploadHandler, false))
+	mux.Handle("GET /api/v1/projects/{projectID}/documents/{documentID}/status", authService.ProjectAccess(statusHandler, true))
+	mux.Handle("GET /api/v1/projects/{projectID}/documents/{documentID}/chunks", authService.ProjectAccess(documents.NewChunkHandler(repository, logger), true))
+	mux.Handle("GET /api/v1/projects/{projectID}/documents/{documentID}/pdf", authService.ProjectAccess(documents.NewPDFHandler(repository, store, logger), true))
 	var searchEmbedder search.Embedder
 	var answerGenerator search.AnswerGenerator
 	if key := os.Getenv("OPENAI_API_KEY"); key != "" {
@@ -135,8 +164,8 @@ func main() {
 		answerGenerator = search.NewOpenAIAnswerGenerator(key)
 	}
 	searchHandler := search.NewHandler(search.NewRepository(db), searchEmbedder, logger)
-	mux.Handle("POST /api/v1/search", searchHandler)
-	mux.Handle("POST /api/v1/answer", search.NewAnswerHandler(searchHandler, answerGenerator))
+	mux.Handle("POST /api/v1/projects/{projectID}/search", authService.ProjectAccess(searchHandler, false))
+	mux.Handle("POST /api/v1/projects/{projectID}/answer", authService.ProjectAccess(search.NewAnswerHandler(searchHandler, answerGenerator), false))
 	frontend := web.Handler()
 	mux.Handle("GET /{$}", frontend)
 	mux.Handle("GET /app.css", frontend)

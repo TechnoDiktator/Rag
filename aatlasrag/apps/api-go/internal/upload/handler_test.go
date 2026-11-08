@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"atlasrag/api-go/internal/auth"
 	"atlasrag/api-go/internal/documents"
 )
 
@@ -223,6 +224,7 @@ func performUpload(t *testing.T, handler http.Handler, filename string, content 
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/documents", &body)
+	request = request.WithContext(auth.WithProjectID(auth.WithUserID(request.Context(), uuid.New()), uuid.New()))
 	request.Header.Set("Content-Type", writer.FormDataContentType())
 	if correlationID != "" {
 		request.Header.Set("X-Correlation-ID", correlationID)

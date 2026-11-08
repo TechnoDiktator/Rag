@@ -23,6 +23,11 @@
         <a class="nav-link" href="#chunks"><span aria-hidden="true">▤</span> View chunks</a>
         <a class="nav-link" href="#search"><span aria-hidden="true">⌕</span> Search chunks</a>
       </nav>
+      <section id="sidebar-projects" class="sidebar-projects" aria-labelledby="projects-title" hidden>
+        <div class="side-label" id="projects-title">YOUR PROJECTS</div>
+        <div id="project-list" class="project-list" aria-label="Select a project"></div>
+        <p id="project-empty" class="project-empty">No projects yet. Create one above.</p>
+      </section>
       <div class="side-bottom">
         <div class="sidebar-note">
           <span class="note-icon" aria-hidden="true">✦</span>
@@ -36,9 +41,41 @@
     <main id="workspace">
       <header class="topbar">
         <div class="breadcrumbs">Workspace <span>/</span> <strong>Overview</strong></div>
-        <div class="topbar-right"><span class="environment"><span class="online-dot"></span> DOCUMENT WORKSPACE</span><span class="avatar">A</span></div>
+        <div class="topbar-right">
+          <span id="active-project-label" class="active-project-label">No project selected</span>
+          <button id="create-project-button" class="topbar-button topbar-primary" type="button" hidden>+ New project</button>
+          <button id="project-settings-button" class="topbar-button" type="button" hidden>Project</button>
+          <button id="account-button" class="topbar-button" type="button">Log in / Register</button>
+        </div>
       </header>
       <div class="content">
+        <div id="account-message" class="message workspace-message" role="status" aria-live="polite"></div>
+        <dialog id="workspace-dialog" class="workspace-dialog" aria-labelledby="dialog-title">
+          <div class="dialog-heading">
+            <div><span class="panel-kicker">YOUR WORKSPACE</span><h3 id="dialog-title">Account</h3></div>
+            <button id="close-dialog" class="dialog-close" type="button" aria-label="Close">×</button>
+          </div>
+          <form id="auth-form" class="status-form">
+            <label for="auth-email">EMAIL</label><input id="auth-email" type="email" autocomplete="username" required>
+            <label for="auth-password">PASSWORD (12–128 bytes)</label><input id="auth-password" type="password" autocomplete="current-password" minlength="12" required>
+            <div class="search-actions"><button class="button lookup-button" type="submit" value="login">Log in</button><button class="button lookup-button" type="submit" value="register">Register</button></div>
+          </form>
+          <div id="account-controls" class="dialog-section" hidden>
+            <p class="panel-description">Your session stays in this browser until you log out or it expires.</p>
+            <button id="logout-button" class="button lookup-button" type="button">Log out</button>
+          </div>
+          <form id="project-form" class="status-form" hidden>
+            <label for="project-name">PROJECT NAME</label><div class="input-row"><input id="project-name" maxlength="200" required><button class="button lookup-button" type="submit">Create</button></div>
+          </form>
+          <div id="project-controls" class="dialog-section" hidden>
+            <p class="panel-description">All project members can read, upload and add other members. Roles are not implemented.</p>
+            <form id="member-form" class="status-form">
+              <label for="member-email">ADD EXISTING USER BY EMAIL</label><div class="input-row"><input id="member-email" type="email" required><button class="button lookup-button" type="submit">Add member</button></div>
+            </form>
+            <label for="project-documents">PROJECT DOCUMENTS</label><select id="project-documents"><option value="">Select a document</option></select>
+          </div>
+          <div id="dialog-message" class="message" role="status" aria-live="polite"></div>
+        </dialog>
         <div class="page-head">
           <div>
             <div class="eyebrow"><span class="eyebrow-line"></span> YOUR KNOWLEDGE WORKSPACE</div>

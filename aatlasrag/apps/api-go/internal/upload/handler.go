@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"atlasrag/api-go/internal/auth"
 	"atlasrag/api-go/internal/documents"
 )
 
@@ -63,6 +64,12 @@ func NewHandler(registrar Registrar, objectStore ObjectStore, maxUploadSize int6
 func (handler *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	projectID, hasProject := auth.ProjectID(r.Context())
+	userID, hasUser := auth.UserID(r.Context())
+	if !hasProject || !hasUser {
+		writeError(w, http.StatusUnauthorized, "project authentication required")
 		return
 	}
 
@@ -131,6 +138,8 @@ func (handler *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	registration := documents.Registration{
 		DocumentID:    documentID,
+		ProjectID:     projectID,
+		UploadedBy:    userID,
 		EventID:       eventID,
 		CorrelationID: correlationID,
 		Filename:      filename,

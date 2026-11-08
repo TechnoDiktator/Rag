@@ -14,6 +14,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"atlasrag/api-go/internal/auth"
 )
 
 type fakeEmbedder struct {
@@ -122,14 +124,14 @@ func TestHybridSearchPostgres(t *testing.T) {
 	if url == "" {
 		t.Skip("ATLASRAG_TEST_DATABASE_URL not set")
 	}
-	ctx := context.Background()
+	ctx := auth.WithProjectID(context.Background(), uuid.New())
 	conn, err := pgx.Connect(ctx, url)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close(ctx)
 	_, err = conn.Exec(ctx, `
-CREATE TEMP TABLE documents (id uuid, current_version int, status text, filename text);
+CREATE TEMP TABLE documents (id uuid, current_version int, status text, filename text, project_id uuid);
 CREATE TEMP TABLE document_chunks (document_id uuid, version int, chunk_index int, content text);
 CREATE TEMP TABLE document_chunk_embeddings (document_id uuid, version int, chunk_index int, searchable_text text, description text, embedding vector(1536), embedding_model text);
 CREATE TEMP TABLE document_chunk_sources (document_id uuid, version int, chunk_index int, page_number int);
@@ -143,7 +145,8 @@ CREATE TEMP TABLE document_chunk_sources (document_id uuid, version int, chunk_i
 	v2[0] = 0
 	v2[1] = 1
 	encoded2, _ := json.Marshal(v2)
-	_, err = conn.Exec(ctx, `INSERT INTO documents VALUES ($1,1,'COMPLETED','one.pdf'),($2,1,'COMPLETED','two.pdf')`, id1, id2)
+	projectID, _ := auth.ProjectID(ctx)
+	_, err = conn.Exec(ctx, `INSERT INTO documents VALUES ($1,1,'COMPLETED','one.pdf',$3),($2,1,'COMPLETED','two.pdf',$3)`, id1, id2, projectID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +182,7 @@ CREATE TEMP TABLE document_chunk_sources (document_id uuid, version int, chunk_i
 	}
 	w := httptest.NewRecorder()
 	NewHandler(repo, &fakeEmbedder{vector: goodVector()}, nil).ServeHTTP(
-		w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"query":"quasar","top_k":2}`)))
+		w, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"query":"quasar","top_k":2}`)).WithContext(ctx))
 	var response struct {
 		Results []Result `json:"results"`
 	}
@@ -208,6 +211,26 @@ CREATE TEMP TABLE document_chunk_sources (document_id uuid, version int, chunk_i
 	modelFiltered, err := repo.Search(ctx, "quasar", goodVector(), nil, 3)
 	if err != nil || len(modelFiltered) != 1 || modelFiltered[0].DocumentID != id1.String() {
 		t.Fatalf("embedding model filter: %+v, %v", modelFiltered, err)
+	}
+	otherProject := uuid.New()
+	if _, err := conn.Exec(ctx, `UPDATE documents SET project_id=$1 WHERE id=$2`, otherProject, id1); err != nil {
+		t.Fatal(err)
+	}
+	isolated, err := repo.Search(ctx, "quasar", goodVector(), nil, 3)
+	if err != nil || len(isolated) != 0 {
+		t.Fatalf("foreign project document leaked: %+v, %v", isolated, err)
+	}
+	otherCtx := auth.WithProjectID(ctx, otherProject)
+	own, err := repo.Search(otherCtx, "quasar", goodVector(), nil, 3)
+	if err != nil || len(own) != 1 || own[0].DocumentID != id1.String() {
+		t.Fatalf("project scoped retrieval failed: %+v, %v", own, err)
+	}
+	foreignFilter, err := repo.Search(ctx, "quasar", goodVector(), &id1, 3)
+	if err != nil || len(foreignFilter) != 0 {
+		t.Fatalf("foreign document filter leaked: %+v, %v", foreignFilter, err)
+	}
+	if _, err := repo.Search(context.Background(), "quasar", goodVector(), nil, 3); err == nil {
+		t.Fatal("search without project scope succeeded")
 	}
 }
 

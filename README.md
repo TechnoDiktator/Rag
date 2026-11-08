@@ -6,9 +6,10 @@ relevant chunks with hybrid search, and asks GPT-4o to answer using those
 chunks. The Go API also serves the browser interface; a Python worker handles
 ingestion. The notebooks in the repository are experiments, not the backend.
 
-> **Local development only.** There is no authentication, tenant isolation,
-> rate limiting, spending limit, production deployment configuration, or
-> automatic reprocessing. Do not expose the services to untrusted clients.
+> **Local development only.** The project-scoped login flow is a prototype;
+> it has no rate limiting, spending limit, password recovery, token revocation,
+> production deployment configuration, or automatic reprocessing. Do not
+> expose the services to untrusted clients.
 > Indexing and querying OpenAI are optional, billable, and send data externally.
 > Check the citations: valid citation numbers do not guarantee factual support.
 
@@ -29,6 +30,10 @@ ingestion. The notebooks in the repository are experiments, not the backend.
 
 The images below are examples from the local UI; actual output depends on the
 document, the indexed content, and model response.
+
+**Login And Register**
+
+![AtlasRAG home and document workspace](aatlasrag/images/login.png)
 
 **Home and upload**
 
@@ -122,11 +127,11 @@ steps, not a strict ordering between those independent activities.
 
 ### Processing details
 
-1. **Upload:** `POST /api/v1/documents` accepts one multipart `file`, checks
+1. **Upload:** `POST /api/v1/projects/{project_id}/documents` accepts one multipart `file`, checks
    the signature and the configured size limit (50 MiB by default), stages
    and hashes it, then writes `documents/<document-id>/v1/source.pdf` to
    MinIO. The document/version, `PARSE` job and event are registered together.
-   A duplicate shared-content SHA-256 returns HTTP 409.
+   A duplicate SHA-256 within the same project returns HTTP 409.
 2. **Outbox:** the event contains metadata and the object key, not PDF bytes.
    The publisher marks it published after Kafka acknowledgement. A crash
    between publish and marking can produce duplicates; this is not exactly-once
@@ -206,8 +211,12 @@ still requested, but the GPT-4o answer call is skipped.
 
 ## Database schema
 
-The authoritative definitions are the [SQL migrations](aatlasrag/migrations/). The
-diagram shows declared foreign-key relationships; `outbox_events.aggregate_id`
+The authoritative definitions are the [SQL migrations](aatlasrag/migrations/).
+The diagram shows the original ingestion schema; migration 000006 additionally
+creates `users`, `projects` and `project_members`, and adds `project_id` and
+`uploaded_by` to `documents`. Each membership links a user to a project, and
+new document access is scoped through that project.
+The diagram shows declared foreign-key relationships; `outbox_events.aggregate_id`
 identifies the document in the event but is **not** a database foreign key.
 
 ```mermaid
@@ -313,7 +322,8 @@ erDiagram
 
 | Table | Keys, constraints and purpose |
 | --- | --- |
-| `documents` | UUID PK; optional `tenant_id`; separate unique SHA-256 indexes for shared and tenant content; current version, filename, object key, MIME, size, optional page count, lifecycle status and timestamps. Tenant assignment/isolation is not implemented. |
+| `users`, `projects`, `project_members` | Account password hashes, projects, and many-to-many project membership. There are no roles yet. |
+| `documents` | UUID PK; `project_id` and `uploaded_by` for new uploads; unique `(project_id, content_hash)` for project documents. Legacy documents can have no project and are inaccessible through the new API. The older `tenant_id` is not used for project authorization. |
 | `document_versions` | UUID PK; FK to document; unique `(document_id, version)`; PDF key/hash, optional parser/embedding models and status. This composite unique key is referenced by dependent tables. |
 | `ingestion_jobs` | UUID PK; composite FK to version; unique `(document_id, version, stage)`; stage, job status, retries, error and timing. Current processing uses a `PARSE` job for the configured path. |
 | `outbox_events` | UUID PK; event type/version, document aggregate ID, JSON envelope, timestamps; payload fields are checked against envelope columns. Partial index finds unpublished events. No FK to `documents`. |
@@ -335,6 +345,7 @@ independent workers for each stage exist. Current ordinary statuses are
 | `000003` | Structured elements and image object keys. |
 | `000004` | Chunks and source references. |
 | `000005` | `vector` extension and chunk embeddings. |
+| `000006` | Users, projects, memberships, and optional project/uploader references on existing documents. |
 
 ## Run locally on Windows
 
@@ -374,12 +385,25 @@ docker compose ps
 
 The first build may take several minutes. Compose starts PostgreSQL 17 with
 pgvector, MinIO, Kafka and the worker. Fresh PostgreSQL volumes automatically
-run the five forward migrations; existing volumes do **not** rerun
+run the six forward migrations; existing volumes do **not** rerun
 initialization scripts. For an existing volume, inspect the schema, back up
 data if needed, and apply missing migrations **once in order**, following the
 [migration guide](aatlasrag/migrations/README.md). Before switching PostgreSQL
 images, back up your data and check collation compatibility. Never rerun applied
 migrations or destroy volumes merely to upgrade.
+
+If migrations 000001–000005 are already present, apply 000006 **once** from
+`aatlasrag\infra`:
+
+```powershell
+Get-Content ..\migrations\000006_project_isolation.up.sql -Raw |
+  docker exec -i atlasrag-postgres psql -v ON_ERROR_STOP=1 --single-transaction -U atlasrag -d atlasrag
+```
+
+This migration preserves old documents with no project; the new API cannot
+access them. It does not erase database rows, Kafka messages or MinIO objects.
+For a clean local start, the destructive volume-reset command and warning are
+in [Operations and troubleshooting](#operations-and-troubleshooting).
 
 Default host addresses: PostgreSQL `localhost:5433`, MinIO API
 `localhost:9000`, MinIO Console `http://localhost:9001`, Kafka
@@ -438,6 +462,12 @@ Remove-Variable key
 Then configure and start the API:
 
 ```powershell
+$keyDir = Join-Path $env:USERPROFILE ".atlasrag"
+New-Item -ItemType Directory -Force $keyDir | Out-Null
+cd <repo-root>\aatlasrag\apps\api-go
+# Run once only; keygen refuses to overwrite an existing key.
+go run .\cmd\keygen (Join-Path $keyDir "jwt-ed25519.pem")
+$env:JWT_PRIVATE_KEY_PATH = Join-Path $keyDir "jwt-ed25519.pem"
 $env:DATABASE_URL = "postgres://atlasrag:local-dev-postgres-password@localhost:5433/atlasrag?sslmode=disable"
 $env:S3_ENDPOINT = "localhost:9000"
 $env:S3_ACCESS_KEY = "atlasrag-local"
@@ -445,7 +475,6 @@ $env:S3_SECRET_KEY = "local-dev-minio-password"
 $env:S3_BUCKET = "atlasrag-documents"
 $env:S3_USE_SSL = "false"
 $env:HTTP_ADDR = "127.0.0.1:18080"
-cd <repo-root>\aatlasrag\apps\api-go
 go run .\cmd\api
 ```
 
@@ -454,12 +483,21 @@ Replace `<repo-root>` with the actual path. The default Kafka broker is
 `http://localhost:18080/`. If `HTTP_ADDR` is omitted, use port `8080`.
 No separate UI server is needed. Stop the API with Ctrl+C in its terminal.
 Restart it after changing its environment or embedded frontend files.
+Protect the private key with OS file permissions; do not commit, share, or put
+it in a public directory. Generate it once and reuse it across restarts. On
+Windows, verify the directory's ACLs because Unix file modes do not establish
+equivalent Windows access controls. Rotating the key invalidates existing JWTs.
 
 ## Try the complete workflow
 
 1. Enable indexing before upload if you want retrieval; choose Unstructured
    for image/table descriptions. Ensure the worker is running.
-2. Open the UI, upload one PDF and save the document ID. Status is polled
+2. Use **Log in / Register** in the top bar, then create a project with
+   **New project** or select one from the sidebar. Use the top-bar **Project**
+   button to choose a project document or add members. Members can add other
+   **already registered** users by email. All members currently have equal
+   access, including the ability to add more members; roles and removal are not
+   implemented. Upload one PDF and save the document ID. Status is polled
    automatically; the same ID can be entered later.
 3. Wait for `COMPLETED`. Inspect the chunk table and page references; a
    completed document without embeddings is not searchable.
@@ -485,20 +523,28 @@ produced for one Transformer question; it is not a quality evaluation.
 
 ## API reference
 
-All endpoints are unauthenticated and should be used locally only. API handler
-errors generally return JSON objects with an `error` field. `GET /healthz` reports the API process, not end-to-end
+Register and login are public; project and document endpoints require
+`Authorization: Bearer <access_token>`. The browser keeps the token in memory
+only. Tokens expire after 15 minutes; log in again when expired. Logout clears
+the browser's copy but does **not** revoke an already-issued token; there are
+no refresh tokens. Use this prototype locally only. API handler errors generally
+return JSON objects with an `error` field. `GET /healthz` reports the API process, not end-to-end
 worker, broker or model readiness.
 
 | Method and path | Behavior |
 | --- | --- |
 | `GET /` | Embedded frontend; assets at `/app.css` and `/app.js`. |
 | `GET /healthz` | Process health response. |
-| `POST /api/v1/documents` | Multipart field `file`; returns HTTP 202, `document_id` and `QUEUED`. Optional `X-Correlation-ID` must be a UUID. |
-| `GET /api/v1/documents/{id}/status` | Current document/version status and parse-job details. |
-| `GET /api/v1/documents/{id}/chunks?offset=0` | Current version, up to 20 chunks and `has_more`; offsets range from 0 to 1,000,000. |
-| `GET /api/v1/documents/{id}/pdf?version=1` | Original PDF for the requested version; supports byte ranges. |
-| `POST /api/v1/search` | Hybrid ranked results with chunk text, descriptions, pages, ranks and scores. |
-| `POST /api/v1/answer` | Same search input; returns generated answer, insufficient-evidence flag and numbered retrieved sources. |
+| `POST /api/v1/auth/register`, `POST /api/v1/auth/login` | Email/password registration and JWT login. Passwords must be 12–128 bytes. |
+| `POST /api/v1/projects`, `GET /api/v1/projects` | Create or list the caller's projects. |
+| `POST /api/v1/projects/{project_id}/members` | Add an existing user by email; any member can add members. |
+| `GET /api/v1/projects/{project_id}/documents` | List project documents. |
+| `POST /api/v1/projects/{project_id}/documents` | Multipart field `file`; returns HTTP 202, `document_id` and `QUEUED`. Optional `X-Correlation-ID` must be a UUID. |
+| `GET /api/v1/projects/{project_id}/documents/{id}/status` | Current document/version status and parse-job details. |
+| `GET /api/v1/projects/{project_id}/documents/{id}/chunks?offset=0` | Current version, up to 20 chunks and `has_more`; offsets range from 0 to 1,000,000. |
+| `GET /api/v1/projects/{project_id}/documents/{id}/pdf?version=1` | Original PDF for the requested version; supports byte ranges. |
+| `POST /api/v1/projects/{project_id}/search` | Hybrid ranked results with chunk text, descriptions, pages, ranks and scores. |
+| `POST /api/v1/projects/{project_id}/answer` | Same search input; returns generated answer, insufficient-evidence flag and numbered retrieved sources. |
 
 Search and answer request (omit `document_id` to search all indexed documents):
 
@@ -507,12 +553,13 @@ Search and answer request (omit `document_id` to search all indexed documents):
 ```
 
 `query` must contain 1–2,000 Unicode characters after trimming; `top_k`
-defaults to 3 and must be 1–20. Optional `document_id` must be a UUID. Example
-PowerShell invocation, from a separate terminal while the API is running:
+defaults to 3 and must be 1–20. Optional `document_id` must be a UUID. Example PowerShell invocation, using a previously obtained access token and
+project ID, from a separate terminal while the API is running:
 
 ```powershell
 $body = @{ query = "What is the transformer architecture?"; top_k = 3 } | ConvertTo-Json
-Invoke-RestMethod -Method Post -Uri http://localhost:18080/api/v1/answer -ContentType "application/json" -Body $body
+$headers = @{ Authorization = "Bearer $accessToken" }
+Invoke-RestMethod -Method Post -Uri "http://localhost:18080/api/v1/projects/$projectId/answer" -Headers $headers -ContentType "application/json" -Body $body
 ```
 
 This makes billable OpenAI calls and sends the query and retrieved excerpts to
@@ -570,8 +617,8 @@ orphan cleanup, dead-letter handling and bounded retries remain future work.
 
 ## Limitations and further documentation
 
-- This is a local prototype; no production deployment, authentication,
-  authorization, tenant isolation, budget control or rate limiting.
+- This is a local prototype; project membership is enforced, but there is no
+  production deployment, roles, token revocation, budget control or rate limiting.
 - Evaluate retrieval relevance, answer support and extraction/OCR quality on
   representative documents. No throughput or thousands-of-documents scaling
   claim has been established.
@@ -582,5 +629,5 @@ orphan cleanup, dead-letter handling and bounded retries remain future work.
 - See the [Go API](aatlasrag/apps/api-go/README.md),
   [worker](aatlasrag/apps/workers-python/README.md), [Compose configuration](aatlasrag/infra/docker-compose.yml),
   [migrations](aatlasrag/migrations/README.md), and [event contract](aatlasrag/contracts/events/README.md).
-  The longer [design notes](aatlasrag/multimodal_README.md) include ideas not necessarily
+  The longer [design notes](aatlasrag/future_updates/Project_level_isolation.md) include ideas not necessarily
   implemented in the running system.

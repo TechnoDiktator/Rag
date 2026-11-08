@@ -9,6 +9,9 @@ files remove each migration's objects. `000004_create_document_chunks.up.sql`
 adds chunks and their page and element references.
 `000005_create_chunk_embeddings.up.sql` enables pgvector and stores 1536-dimensional
 chunk embeddings and descriptions.
+`000006_project_isolation.up.sql` adds users, projects, memberships, and
+document project/uploader references. Existing documents retain null project
+ownership and are inaccessible through the project-scoped API.
 
 On a brand-new Compose database volume, the `.up.sql` files are applied
 automatically. On an existing volume, initialization scripts do not run again.
@@ -24,6 +27,17 @@ Get-Content ..\migrations\000005_create_chunk_embeddings.up.sql -Raw |
 If 000002, 000003 or 000004 are not present yet, apply them in order using the same
 command with each filename. Check which tables exist before applying a migration; these SQL
 scripts are not migration-tracked or repeatable.
+
+Apply 000006 once after 000001–000005, from `infra/`:
+
+```powershell
+Get-Content ..\migrations\000006_project_isolation.up.sql -Raw |
+  docker exec -i atlasrag-postgres psql -v ON_ERROR_STOP=1 --single-transaction -U atlasrag -d atlasrag
+```
+
+The down migration rejects rollback if duplicate hashes across projects would
+violate the old shared-content uniqueness constraint. Run migrations
+transactionally; rollback does not delete associated MinIO objects.
 
 For later schema changes, add a new numbered migration and use a migration
 runner rather than relying on container initialization.

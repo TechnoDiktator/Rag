@@ -25,6 +25,7 @@ services:
       - ../migrations/000003_create_document_elements.up.sql:/docker-entrypoint-initdb.d/003_create_document_elements.sql:ro
       - ../migrations/000004_create_document_chunks.up.sql:/docker-entrypoint-initdb.d/004_create_document_chunks.sql:ro
       - ../migrations/000005_create_chunk_embeddings.up.sql:/docker-entrypoint-initdb.d/005_create_chunk_embeddings.sql:ro
+      - ../migrations/000006_project_isolation.up.sql:/docker-entrypoint-initdb.d/006_project_isolation.sql:ro
     healthcheck:
       # Other services can wait for PostgreSQL to accept connections.
       test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
